@@ -20,7 +20,7 @@
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>15.0</string>
-	<!-- メニューバー常駐アプリ: Dock と Cmd+Tab に出さない -->
+	<!-- Menu bar resident app: keep out of the Dock and Cmd+Tab -->
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSHighResolutionCapable</key>

@@ -1,17 +1,18 @@
-# Shepherd の .app バンドルを SwiftPM 成果物から組み立てる。
-# Xcode プロジェクトは持たず、swift build + 手組みバンドルで完結させる。
-# ローカル開発は ad-hoc 署名・現行アーキのみ。リリース (CI) は
-# ARCHS / SIGN_IDENTITY / VERSION を渡して universal + Developer ID にする
-# (.github/workflows/release.yml が呼び出し元)。
+# Assembles the Shepherd .app bundle from SwiftPM build products.
+# No Xcode project: swift build + a hand-rolled bundle is all there is.
+# Local development uses ad-hoc signing and the current arch only; releases
+# (CI) pass ARCHS / SIGN_IDENTITY / VERSION for a universal + Developer ID
+# build (.github/workflows/release.yml is the caller).
 
 APP := dist/Shepherd.app
 ZIP := dist/Shepherd.zip
 
-# 署名 identity。既定の "-" は ad-hoc。リリースでは
-# SIGN_IDENTITY="Developer ID Application" (部分一致で解決される) を渡す。
-# Developer ID のときだけ hardened runtime + secure timestamp を付ける。
-# 両方とも公証 (notarytool) の必須条件で、逆に ad-hoc へ --timestamp を
-# 付けるとタイムスタンプサーバーへの署名要求が通らず codesign が失敗する。
+# Signing identity. The default "-" is ad-hoc. Releases pass
+# SIGN_IDENTITY="Developer ID Application" (resolved by partial match).
+# Hardened runtime + secure timestamp are added only for Developer ID:
+# both are required for notarization (notarytool), while --timestamp on an
+# ad-hoc signature makes codesign fail because there is no key a timestamp
+# server request can be signed with.
 SIGN_IDENTITY := -
 ifeq ($(SIGN_IDENTITY),-)
 CODESIGN_FLAGS :=
@@ -19,10 +20,11 @@ else
 CODESIGN_FLAGS := --options runtime --timestamp
 endif
 
-# ビルド対象アーキテクチャ。空 (既定) なら現行アーキのみ。
-# リリースでは ARCHS="arm64 x86_64" で universal binary にする。
-# --arch を 1 つでも渡すと SwiftPM は成果物を .build/release ではなく
-# .build/apple/Products/Release に置くため、BUILD_DIR ごと切り替える。
+# Target architectures. Empty (default) builds the current arch only.
+# Releases pass ARCHS="arm64 x86_64" for a universal binary.
+# Passing any --arch makes SwiftPM place products under
+# .build/apple/Products/Release instead of .build/release, so BUILD_DIR
+# switches along with it.
 ARCHS :=
 ifeq ($(ARCHS),)
 BUILD_DIR := .build/release
@@ -33,27 +35,29 @@ ARCH_FLAGS := $(foreach arch,$(ARCHS),--arch $(arch))
 endif
 
 BINARY := $(BUILD_DIR)/Shepherd
-# SPM が resources 宣言から生成するバンドル。Bundle.module は実行時に
-# Bundle.main.resourceURL (= Contents/Resources) からこれを探すため、
-# .app へ同梱しないとリソース参照 (AgentIcons) が fatalError で落ちる。
+# Bundle SPM generates from the resources declaration. At runtime
+# Bundle.module looks for it under Bundle.main.resourceURL
+# (= Contents/Resources), so unless it ships inside the .app, resource
+# lookups (AgentIcons) die with a fatalError.
 RESOURCE_BUNDLE := $(BUILD_DIR)/Shepherd_Shepherd.bundle
 
-# リリースバージョン。指定時のみ、.app へコピーした後の Info.plist の
-# CFBundleShortVersionString / CFBundleVersion を書き換える (ツリー側の
-# Support/Info.plist は触らない)。CI がタグ v1.2.3 から "1.2.3" を渡す。
+# Release version. When set, rewrites CFBundleShortVersionString /
+# CFBundleVersion in the Info.plist copied into the .app (the tree's
+# Support/Info.plist is left untouched). CI passes "1.2.3" from tag v1.2.3.
 VERSION :=
-# アプリアイコン。生成物の .icns をツリーに置き、app はコピーするだけにする
-# (デザインは滅多に変わらないので毎ビルド再描画しない)。
-# デザインを変えたら Support/GenerateAppIcon.swift を編集して make icon。
-# PNG は README 掲載用で、icns と同時に同じソースから再生成する。
-# Support/StatusIcons/ は README の凡例用に、メニューバーの状態アイコンを
-# GenerateStatusIcons.swift で書き出したもの。これも make icon で再生成する。
+# App icon. The generated .icns lives in the tree and the app build only
+# copies it (the design rarely changes, so it is not re-rendered on every
+# build). To change the design, edit Support/GenerateAppIcon.swift and run
+# make icon. The PNG is for the README and regenerates from the same source
+# alongside the icns. Support/StatusIcons/ holds the menu bar status icons
+# written out by GenerateStatusIcons.swift for the README legend; make icon
+# regenerates them as well.
 ICNS := Support/AppIcon.icns
 ICON_PNG := Support/AppIcon.png
 ICONSET := .build/AppIcon.iconset
 STATUS_ICONS := Support/StatusIcons
-# README 用スクリーンショット。アプリ自身の --render-screenshots モード
-# (ScreenshotRenderer) がモックデータの MenuPanel をヘッドレスで描画する。
+# README screenshots. The app's own --render-screenshots mode
+# (ScreenshotRenderer) renders the MenuPanel with mock data, headless.
 SCREENSHOTS := Support/Screenshots
 
 .PHONY: app zip build icon screenshots run clean
@@ -73,8 +77,8 @@ ifneq ($(VERSION),)
 endif
 	codesign --force --sign "$(SIGN_IDENTITY)" $(CODESIGN_FLAGS) $(APP)
 
-# 配布用 zip。plain zip はリソースフォークや署名のメタデータを落として
-# Gatekeeper 検証を壊すことがあるため、ditto -c -k で作る。
+# Distribution zip. Plain zip can drop resource forks and signing
+# metadata and break Gatekeeper verification, so build it with ditto -c -k.
 zip: app
 	ditto -c -k --keepParent $(APP) $(ZIP)
 
