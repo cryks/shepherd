@@ -15,7 +15,10 @@ on:
 
 jobs:
   release:
-    runs-on: macos-15
+    # MonitorView が macOS 26 SDK の API (sharedBackgroundVisibility) を
+    # 使うため、Xcode 26 が既定の macos-26 イメージが必要。
+    # デプロイターゲットは Package.swift の .macOS(.v15) のまま。
+    runs-on: macos-26
     permissions:
       # gh release create に必要
       contents: write
