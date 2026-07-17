@@ -1,0 +1,86 @@
+# タグ v* の push で GitHub Release を作る。
+# 流れ: テスト → universal ビルド + Developer ID 署名 → 公証 → staple → zip 添付。
+#
+# 必要な Secrets (リポジトリ設定 > Secrets and variables > Actions):
+# - MACOS_CERTIFICATE_P12:      Developer ID Application 証明書 (.p12) の base64
+# - MACOS_CERTIFICATE_PASSWORD: 上記 .p12 のパスワード
+# - NOTARY_KEY_ID:              App Store Connect API キーの Key ID
+# - NOTARY_ISSUER_ID:           同 Issuer ID
+# - NOTARY_KEY:                 同 API キー (.p8) の中身そのまま
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release:
+    runs-on: macos-15
+    permissions:
+      # gh release create に必要
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests
+        run: swift test
+
+      # ランナーに専用キーチェーンを作って Developer ID 証明書を入れる。
+      # set-key-partition-list は、codesign がパスワードプロンプトなしで
+      # 秘密鍵を使えるようにするための許可 (ヘッドレス CI では必須)。
+      - name: Import Developer ID certificate
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/release.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          rm "$RUNNER_TEMP/cert.p12"
+
+      # タグ v1.2.3 → VERSION=1.2.3 として Info.plist に注入。
+      # identity 名 "Developer ID Application" は部分一致で、キーチェーン内の
+      # 実体 "Developer ID Application: <名前> (<Team ID>)" に解決される。
+      - name: Build, sign, and zip
+        run: |
+          make zip \
+            ARCHS="arm64 x86_64" \
+            SIGN_IDENTITY="Developer ID Application" \
+            VERSION="${GITHUB_REF_NAME#v}"
+
+      # 公証は zip を提出し、チケットは zip ではなく中の .app にしか
+      # staple できないため、staple 後に zip を作り直して添付物とする。
+      - name: Notarize and staple
+        env:
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+          NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
+        run: |
+          KEY_FILE="$RUNNER_TEMP/notary-key.p8"
+          echo "$NOTARY_KEY" > "$KEY_FILE"
+          xcrun notarytool submit dist/Shepherd.zip \
+            --key "$KEY_FILE" \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID" \
+            --wait
+          rm "$KEY_FILE"
+          xcrun stapler staple dist/Shepherd.app
+          ditto -c -k --keepParent dist/Shepherd.app \
+            "dist/Shepherd-${GITHUB_REF_NAME#v}.zip"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "dist/Shepherd-${GITHUB_REF_NAME#v}.zip" \
+            --title "Shepherd ${GITHUB_REF_NAME#v}" \
+            --generate-notes
