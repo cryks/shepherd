@@ -1,9 +1,10 @@
-// メニューバークリックで開くパネル (MenuBarExtra の .window スタイル)。
-// NSMenu は複数行のアイテムを描画できないため、ネイティブメニューではなく
-// SwiftUI ビューをそのまま出す。監視ウィンドウと同じ AgentRow を接続先と workspace
-// の見出しで区切って並べ、下部に NSMenu のアイテムを模した操作項目
-// (監視ウィンドウ開閉・設定・終了) を置く。パネルの開閉自体は MenuBarExtra が
-// 管理し、ここでは行クリックなどの操作後に dismiss で明示的に閉じる。
+// Panel opened by clicking the menu bar item (MenuBarExtra's .window style).
+// NSMenu cannot render multi-line items, so a SwiftUI view is presented
+// directly instead of a native menu. The same AgentRow as the monitor window
+// is laid out, separated by endpoint and workspace headers, with action items
+// styled after NSMenu items (open/close the monitor window, settings, quit) at
+// the bottom. MenuBarExtra manages opening and closing the panel itself; here
+// the panel is closed explicitly via dismiss after actions such as a row click.
 
 import AppKit
 import SwiftUI
@@ -65,25 +66,29 @@ struct MenuPanel: View {
         })
     }
 
-    /// リスト実寸。MenuBarExtra の window はビューの理想サイズでパネルの大きさを
-    /// 決めるが、ScrollView は理想高さを持たず 0 に潰れるため、中身の実寸を
-    /// 測って ScrollView の高さとして与える (上限を超えたらスクロール)。
+    /// Measured list height. MenuBarExtra's window sizes the panel from the
+    /// view's ideal size, but a ScrollView has no ideal height and collapses to
+    /// 0, so the content's actual size is measured and given to the ScrollView
+    /// as its height (scrolling once the cap is exceeded).
     @State private var listHeight: CGFloat = 0
 
-    /// パネル全体が取りうる最大高。パネル上端 (メニューバー直下) から
-    /// screen.visibleFrame の底 (Dock を除いた画面下端) までの距離で、
-    /// PanelMaxHeightReader が NSWindow から実測する。window に attach される前の
-    /// 初回レイアウトでは nil。
+    /// Maximum height the whole panel can take: the distance from the panel's
+    /// top edge (just below the menu bar) to the bottom of screen.visibleFrame
+    /// (the screen's bottom edge excluding the Dock), measured from the NSWindow
+    /// by PanelMaxHeightReader. nil during the first layout before the view is
+    /// attached to a window.
     @State private var panelMaxHeight: CGFloat?
 
-    /// リスト以外の部分 (区切り線 + footer) の実寸。パネル最大高からこれを
-    /// 引いた残りがリストに割り当てられる。
+    /// Measured height of everything but the list (divider + footer). What
+    /// remains after subtracting this from the panel's maximum height is
+    /// allocated to the list.
     @State private var chromeHeight: CGFloat = 0
 
-    /// リストの高さ上限。パネルが画面下端に届くまでリストを伸ばし、届いても
-    /// 収まらない分は ScrollView のスクロールに任せる。パネル最大高が実測
-    /// できるまでの初回レイアウトは、画面からはみ出さない保守的な固定値で開く
-    /// (表示直後に実測値へ置き換わる)。
+    /// Height cap for the list. The list grows until the panel reaches the
+    /// bottom of the screen; whatever still does not fit is left to the
+    /// ScrollView's scrolling. Until the panel's maximum height has been
+    /// measured, the first layout opens with a conservative fixed value that
+    /// stays on screen (replaced by the measured value right after display).
     private var maxListHeight: CGFloat {
         guard let panelMaxHeight else { return 440 }
         return max(panelMaxHeight - chromeHeight, 56)
@@ -109,7 +114,7 @@ struct MenuPanel: View {
                     dismissWindow(id: monitorWindowId)
                 } else {
                     openWindow(id: monitorWindowId)
-                    // LSUIElement アプリはウィンドウを開いても前面化しないので明示的に activate する。
+                    // An LSUIElement app does not come to the front when it opens a window, so activate explicitly.
                     NSApp.activate()
                 }
                 dismiss()
@@ -117,7 +122,7 @@ struct MenuPanel: View {
             MenuSeparator()
             MenuItem(tr("Settings…", ja: "設定…")) {
                 openSettings()
-                // LSUIElement アプリはウィンドウを開いても前面化しないので明示的に activate する。
+                // An LSUIElement app does not come to the front when it opens a window, so activate explicitly.
                 NSApp.activate()
                 dismiss()
             }
@@ -126,22 +131,27 @@ struct MenuPanel: View {
                 NSApp.terminate(nil)
             }
         }
-        // 横の余白は各 MenuItem がハイライトのインセットとして自前で持つ
-        // (MenuSeparator をパネル全幅で引くため、ここでは縦だけ詰める)。
+        // Each MenuItem carries its own horizontal padding as the highlight
+        // inset (only vertical padding is applied here so the MenuSeparator can
+        // span the full panel width).
         .padding(.vertical, 5)
     }
 }
 
-/// NSMenu のアイテムを模したボタン。パネルが .window スタイルで NSMenu を使えない
-/// ため、ホバー中の表示をネイティブメニューの選択状態 (アクセント色背景 + 選択前景色)
-/// に揃えて、メニュー項目として読めるようにする。
-/// 寸法は macOS 26 のネイティブ NSMenu の実測に合わせる: ハイライトはパネル端から
-/// 5pt インセット、テキストはハイライト左端からさらに 12pt、アイテム高さ約 24pt。
-/// ハイライトの角丸 9pt は、MenuBarExtra の window パネルを OS が円換算で約 14pt の
-/// 角丸で描く (NSMenu の約 10pt より大きい) のに対し、インセット 5pt を引いた同心値。
-/// 同心だと 2 つの角の曲線間の距離がどこでも 5pt に保たれ、パネルの角とハイライトの
-/// 角が平行に見える。スタイルは OS がパネルの角に使う連続角丸 (裾が緩やかに立ち上がる
-/// カーブ) と曲線族を揃えるため .continuous にする。
+/// Button styled after an NSMenu item. The panel uses the .window style and
+/// cannot use NSMenu, so the hover appearance is matched to the native menu's
+/// selected state (accent-color background + selected foreground color) so it
+/// reads as a menu item.
+/// Dimensions match measurements of the native NSMenu on macOS 26: the
+/// highlight is inset 5pt from the panel edge, the text a further 12pt from
+/// the highlight's left edge, and the item is about 24pt tall.
+/// The 9pt highlight corner radius is the concentric value: the OS draws the
+/// MenuBarExtra window panel with a corner radius of about 14pt in circular
+/// terms (larger than NSMenu's roughly 10pt), minus the 5pt inset. Concentric
+/// radii keep the distance between the two corner curves at 5pt everywhere, so
+/// the panel corner and the highlight corner look parallel. The style is
+/// .continuous to match the curve family of the continuous corners (a curve
+/// whose tails rise gradually) the OS uses for the panel's corners.
 private struct MenuItem: View {
     let title: String
     let action: () -> Void
@@ -178,8 +188,8 @@ private struct MenuItem: View {
     }
 }
 
-/// NSMenu のセパレータ相当。ネイティブ NSMenu の区切り線はインセットなしで
-/// メニュー全幅に引かれるため、横パディングを持たない。
+/// Equivalent of an NSMenu separator. The native NSMenu separator is drawn
+/// across the full menu width without insets, so this has no horizontal padding.
 private struct MenuSeparator: View {
     var body: some View {
         Divider()
@@ -187,11 +197,13 @@ private struct MenuSeparator: View {
     }
 }
 
-/// パネルをホストする NSWindow から「パネルが画面下端まで伸びたときの最大高」を
-/// 実測して通知する。MenuBarExtra の window パネルは上端がメニューバー直下に
-/// 固定され下方向にだけ伸びるため、window 上端 (frame.maxY) から
-/// screen.visibleFrame の底 (Dock を除いた画面下端) までがパネルの取りうる高さに
-/// なる。SwiftUI から window には触れないので NSViewRepresentable で拾う。
+/// Measures and reports, from the NSWindow hosting the panel, the maximum
+/// height the panel can take when extended to the bottom of the screen. A
+/// MenuBarExtra window panel is pinned just below the menu bar at its top edge
+/// and grows only downward, so the available height runs from the window's top
+/// edge (frame.maxY) to the bottom of screen.visibleFrame (the screen's bottom
+/// edge excluding the Dock). SwiftUI cannot touch the window, so this is picked
+/// up via NSViewRepresentable.
 private struct PanelMaxHeightReader: NSViewRepresentable {
     let onChange: (CGFloat) -> Void
 
@@ -204,13 +216,15 @@ private struct PanelMaxHeightReader: NSViewRepresentable {
     func updateNSView(_ view: WindowObservingView, context: Context) {}
 }
 
-/// window への attach と移動を監視して最大高を報告する NSView。
-/// viewDidMoveToWindow の時点ではパネルの位置決めが済んでいないことがあるため
-/// 1 tick 遅らせて frame を読む。加えて didMove / didChangeScreen を購読するのは、
-/// メニューバーが複数ディスプレイにあると同じ window が別スクリーンへ移動して
-/// 再表示されるためで、開き直しのたびに移動先のスクリーンで計算し直す。
-/// パネルが下に伸びるときも origin が動いて didMove が届くが、上端 (maxY) は
-/// 変わらないので報告値は同じになり、再レイアウトのループにはならない。
+/// NSView that watches window attachment and movement and reports the maximum
+/// height. At viewDidMoveToWindow the panel's positioning may not be finished
+/// yet, so the frame is read one tick later. didMove / didChangeScreen are
+/// additionally subscribed because with menu bars on multiple displays the same
+/// window moves to another screen and is redisplayed, so the value is
+/// recomputed on the destination screen each time the panel is reopened. When
+/// the panel grows downward, the origin also moves and didMove fires, but the
+/// top edge (maxY) does not change, so the reported value stays the same and no
+/// relayout loop occurs.
 private final class WindowObservingView: NSView {
     var onMaxHeightChange: ((CGFloat) -> Void)?
     private var observers: [NSObjectProtocol] = []

@@ -1,12 +1,12 @@
-// AgentMarks アセットの解決契約を検証する。同梱済みの agent は mono / color の
-// 両スタイルが読めること、アセットの無い agent 名は nil に落ちること
-// (AgentRow がテキスト表示にフォールバックする分岐) を見る。
+// Verifies the resolution contract for AgentMarks assets: bundled agents load in
+// both the mono and color styles, and an agent name without an asset resolves to
+// nil (the branch where AgentRow falls back to a text label).
 
 import XCTest
 @testable import Shepherd
 
 final class AgentIconsTests: XCTestCase {
-    /// マーク PDF を同梱している agent ラベル。Resources/AgentMarks の内容と一致させる。
+    /// Agent labels that ship a bundled mark PDF. Keep in sync with the contents of Resources/AgentMarks.
     private let bundledAgents = ["claude", "codex", "pi", "opencode", "omp"]
 
     @MainActor

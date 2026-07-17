@@ -1,6 +1,7 @@
-// SSH や実 Herdr を起動せず、RemoteTunnelManager の状態遷移と process 所有権を検証する。
-// status 応答、常駐 child、socket path cache、socket file、ping、sleep を個別に制御し、
-// cache の再起動越し再利用、ready 前の破棄、ready 後の保持、stop 時の terminate を扱う。
+// Verifies RemoteTunnelManager's state transitions and process ownership without launching SSH or a real Herdr.
+// The status response, long-lived child, socket path cache, socket file, ping, and sleep are each controlled
+// individually, covering cache reuse across restarts, discarding before ready, retention after ready, and
+// terminate on stop.
 
 import Darwin
 import Foundation
@@ -452,7 +453,7 @@ private enum TunnelTestError: Error {
     case write(Int32)
 }
 
-/// live probe の wire 契約を、repository 外の一時 Unix socket で受ける一発 server。
+/// One-shot server that receives the live probe's wire contract on a temporary Unix socket outside the repository.
 private final class TestHerdrPingServer: @unchecked Sendable {
     let socketPath: String
     private let serverFileDescriptor: Int32
@@ -555,7 +556,7 @@ private final class TestHerdrPingServer: @unchecked Sendable {
     }
 }
 
-/// discovery 応答と tunnel child を FIFO で返し、起動回数を記録する runner。
+/// Runner that hands out discovery responses and tunnel children in FIFO order and records launch counts.
 private final class ScriptedCommandRunner: RemoteTunnelCommandRunning, @unchecked Sendable {
     private let lock = NSLock()
     private var discoveryResults: [RemoteProcessResult]
@@ -618,7 +619,7 @@ private final class ScriptedCommandRunner: RemoteTunnelCommandRunning, @unchecke
     }
 }
 
-/// manager 再生成をまたいで同じ path を返し、store(nil) の破棄も観測する memory cache。
+/// In-memory cache that returns the same path across manager recreation and also observes clearing via store(nil).
 private final class TestRemoteSocketPathCache: @unchecked Sendable {
     private let lock = NSLock()
     private var storedValue: String?
@@ -643,7 +644,7 @@ private final class TestRemoteSocketPathCache: @unchecked Sendable {
     }
 }
 
-/// terminate または test 側の exit まで wait を保留する常駐 child。
+/// Long-lived child that keeps wait pending until terminate or a test-driven exit.
 private final class TestRunningProcess: RemoteTunnelRunningProcess, @unchecked Sendable {
     private let lock = NSLock()
     private var result: RemoteProcessResult?
@@ -710,7 +711,7 @@ private final class TestRunningProcess: RemoteTunnelRunningProcess, @unchecked S
     }
 }
 
-/// prepare の時点で SSH listener が現れた状態を再現する filesystem。
+/// Filesystem that reproduces the state where the SSH listener has appeared at prepare time.
 private final class TestTunnelFileSystem: @unchecked Sendable {
     private let lock = NSLock()
     private var available = false
@@ -742,7 +743,7 @@ private final class TestTunnelFileSystem: @unchecked Sendable {
     }
 }
 
-/// ping を test が open するまで止め、listener 作成だけでは ready にならない境界を作る。
+/// Blocks the ping until the test opens the gate, creating the boundary where listener creation alone does not make the tunnel ready.
 private actor ProbeGate {
     private var isOpen = false
     private var waiter: CheckedContinuation<Void, Never>?
@@ -761,7 +762,7 @@ private actor ProbeGate {
     }
 }
 
-/// discovery 中の Task cancellation が command runner まで伝わることを記録する。
+/// Records that Task cancellation during discovery propagates all the way to the command runner.
 private final class CancellableDiscoveryRunner: RemoteTunnelCommandRunning, @unchecked Sendable {
     private let lock = NSLock()
     private var calls = 0

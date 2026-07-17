@@ -1,7 +1,8 @@
-// ローカルセクション見出し設定の解決 (standard / custom / hidden と空白フォールバック) と
-// UserDefaults への永続化、FleetSourceSection への配線を検証する。
-// UserDefaults は専用 suite を使い、実行マシンの設定を読まず・汚さない。
-// 期待値の文字列は表示言語に依存するため、各テストが base 言語 (英語) へ固定する。
+// Verifies resolution of the local-section title setting (standard / custom / hidden plus
+// the whitespace fallback), its persistence to UserDefaults, and the wiring into
+// FleetSourceSection. UserDefaults uses a dedicated suite so the tests neither read nor
+// pollute the settings of the machine they run on. Expected strings depend on the display
+// language, so each test pins it to the base language (English).
 
 import Foundation
 import XCTest
@@ -86,21 +87,21 @@ final class LocalSectionTitleTests: XCTestCase {
         }
     }
 
-    // MARK: - ヘルパ
+    // MARK: - Helpers
 
-    /// テストごとに独立した UserDefaults suite。終了時に domain ごと削除する。
+    /// An isolated UserDefaults suite per test. The whole domain is removed at teardown.
     private func makeDefaults() -> UserDefaults {
         let suiteName = "LocalSectionTitleTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
-        // teardown へは Sendable な suiteName だけを渡し、UserDefaults instance を
-        // actor 境界越しに送らない (SendingRisksDataRace 回避)。
+        // Pass only the Sendable suiteName to teardown; do not send the UserDefaults
+        // instance across the actor boundary (avoids SendingRisksDataRace).
         addTeardownBlock {
             UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
         }
         return defaults
     }
 
-    /// 見出し文字列の期待値を base 言語 (英語) で固定する。
+    /// Pins the expected title strings to the base language (English).
     @MainActor
     private func withEnglish(_ body: () -> Void) {
         let original = LanguageSetting.shared.selection

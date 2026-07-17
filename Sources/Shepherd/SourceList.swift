@@ -1,20 +1,23 @@
-// メニューパネルとポップアウトウィンドウが共有する複数接続先の一覧。リモートが
-// 1 つでも表示されている間は見出しで接続先を区切り、リモートは監視 OFF でも
-// 同じ見出しを残す。ローカルの見出しは、接続先がローカルだけのとき、または
-// LocalSectionTitleSetting の hidden 設定のときに省き、agent 行を直接並べる。
-// ローカルだけに onFocus を渡し、リモート行は同じ情報密度のまま監視専用表示にする。
+// Multi-endpoint list shared by the menu panel and the pop-out window. While at
+// least one remote is visible, headers separate the endpoints, and a remote
+// keeps its header even with monitoring OFF. The local header is omitted when
+// the local endpoint is the only one, or when LocalSectionTitleSetting is set
+// to hidden, in which case the agent rows are laid out directly.
+// onFocus is passed only for local; remote rows keep the same information
+// density but are monitor-only.
 //
-// 同じセクション列を Style で 2 通りに描き分ける:
-// - menu: パネル面へ直接行を並べる NSMenu の流儀。見出しは headline で、
-//   リモート見出しに監視 ON/OFF の checkbox を載せる (OFF は checkbox が
-//   表すため本文を描かない)。
-// - window: ウィンドウ背景の上にセクション本文を角丸カードとして一段浮かせる
-//   設定アプリ風。checkbox は載せず、監視 OFF はカード内の 1 行で表す。
+// The same section column is rendered two ways via Style:
+// - menu: NSMenu-style, laying rows directly on the panel surface. Headers use
+//   headline, and remote headers carry a monitoring ON/OFF checkbox (when OFF,
+//   the checkbox conveys the state, so no body is drawn).
+// - window: settings-app style, floating each section body above the window
+//   background as a rounded card. No checkbox; monitoring OFF is shown as a
+//   single line inside the card.
 
 import SwiftUI
 
 struct SourceList: View {
-    /// 置かれる面ごとの体裁。行ホバーの表現 (AgentRow.HoverStyle) も面に従う。
+    /// Presentation per hosting surface. Row hover rendering (AgentRow.HoverStyle) follows the surface too.
     enum Style {
         case menu
         case window
@@ -44,9 +47,10 @@ struct SourceList: View {
         self.onLocalFocus = onLocalFocus
     }
 
-    /// 見出しの有無: リモート section が 1 つもない一覧はローカルのみで、見出しが
-    /// 接続先の区別という役目を持たないため出さない。リモートがあるときは各 section
-    /// の headerTitle に従う (ローカルの hidden 設定だけが nil を返す)。
+    /// Header visibility: a list with no remote sections is local-only, so the
+    /// header serves no purpose in distinguishing endpoints and is omitted. When
+    /// remotes exist, each section's headerTitle is honored (only the local
+    /// hidden setting returns nil).
     private var hasRemoteSections: Bool {
         sections.contains(where: \.isRemote)
     }
@@ -61,11 +65,12 @@ struct SourceList: View {
     // MARK: - menu
 
     private var menuLayout: some View {
-        // MenuPanel は中身の実寸から window 高さを決めるため、遅延 stack ではなく
-        // 全 source を測れる VStack を使う。表示件数は Herdr の親 agent 数に限られる。
-        // spacing 16 はセクション末尾の行の下 3pt と合算して 19pt。workspace 見出しの
-        // 区切り (11pt) より一段広く取り、接続先の切れ目を workspace の切れ目より
-        // 強く見せる。
+        // MenuPanel derives the window height from the content's actual size, so
+        // use a VStack that can measure every source rather than a lazy stack.
+        // The number of visible items is bounded by Herdr's parent agent count.
+        // spacing 16 combines with the trailing row's 3pt bottom to make 19pt —
+        // one step wider than the workspace header separation (11pt), so an
+        // endpoint boundary reads stronger than a workspace boundary.
         let showsFirstHeader = hasRemoteSections && sections.first?.headerTitle != nil
         return VStack(alignment: .leading, spacing: 16) {
             ForEach(sections) { section in
@@ -77,12 +82,14 @@ struct SourceList: View {
                 )
             }
         }
-        // 実効の上余白は 12pt に揃える: 先頭 section (常にローカル) が見出しを出すときは
-        // 見出し自身が上余白を持たないのでそのまま 12pt、見出しなしでは先頭が workspace
-        // 見出し (上 6pt 持ち) になるので 6pt を足して合計 12pt。この 12pt はメニュー
-        // パネルの外形角丸 (約 12pt) の湾曲が及ぶ範囲を先頭のテキストが抜けるための値
-        // でもある。下 8pt はセクション末尾の行の下 3pt と合算した 11pt が実効の余白で、
-        // 上端 12pt とほぼ対称になる。
+        // Normalize the effective top margin to 12pt: when the first section
+        // (always local) shows a header, the header itself carries no top margin,
+        // so 12pt is used as-is; without a header the first element is a workspace
+        // header (which carries 6pt top), so 6pt is added for a total of 12pt.
+        // This 12pt is also the value that lets the leading text clear the curve
+        // of the menu panel's outer corner radius (about 12pt). The 8pt bottom
+        // combines with the trailing row's 3pt bottom for an effective 11pt
+        // margin, roughly symmetric with the 12pt top.
         .padding(.top, showsFirstHeader ? 12 : 6)
         .padding(.bottom, 8)
     }
@@ -104,13 +111,13 @@ struct SourceList: View {
     }
 }
 
-// MARK: - メニューパネル用セクション
+// MARK: - Menu panel section
 
 private struct MenuSourceSection: View {
     let section: FleetSourceSection
-    /// 見出し行の文字列。nil は見出しなし (接続先がローカルのみ、またはローカルの
-    /// hidden 設定)。リモート section は checkbox を見出しに載せるため、リモートが
-    /// 存在する間は呼び出し側が常に非 nil を渡す。
+    /// Header row string. nil means no header (the local endpoint is the only
+    /// one, or the local hidden setting). Remote sections put the checkbox in
+    /// the header, so while remotes exist the caller always passes non-nil.
     let headerTitle: String?
     let onRemoteEnabledChange: ((HerdrSourceID, Bool) -> Void)?
     let onLocalFocus: (Pane) -> Void
@@ -120,8 +127,9 @@ private struct MenuSourceSection: View {
             if let headerTitle {
                 header(title: headerTitle)
                     .padding(.horizontal, 17)
-                    // 監視オフでは本文行がなく見出しがセクション末尾になるため、
-                    // 行下と同じ 3pt を持たせてセクション間隔 16pt との合算 19pt を保つ。
+                    // With monitoring off there are no body rows and the header
+                    // becomes the section's last element, so give it the same 3pt
+                    // bottom as a row to keep the 19pt total with the 16pt section spacing.
                     .padding(.bottom, section.state == .disabled ? 3 : 0)
             }
 
@@ -177,32 +185,35 @@ private struct MenuSourceSection: View {
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 17)
-            // AgentGroupList の縦リズムに合わせる: 見出しからは VStack spacing 2 と
-            // 合算で 8pt (workspace 見出しと同じ)、セクション境界へは行と同じ 3pt を
-            // 出してセクション間隔 16pt に足す。
+            // Match AgentGroupList's vertical rhythm: 8pt from the header when
+            // combined with the VStack spacing of 2 (same as a workspace header),
+            // and the same 3pt as a row toward the section boundary, adding to
+            // the 16pt section spacing.
             .padding(.top, 6)
             .padding(.bottom, 3)
     }
 }
 
-// MARK: - ポップアウトウィンドウ用セクション
+// MARK: - Pop-out window section
 
-/// セクション本文を角丸カードに包む。見出しはカードの外側のラベルで、
-/// カードの中は menu と同じ AgentGroupList (workspace 見出し + 行)。
-/// checkbox を持たないため、監視 OFF はカード内の「監視オフ」1 行で示す。
+/// Wraps the section body in a rounded card. The header is a label outside the
+/// card; inside the card is the same AgentGroupList as menu (workspace headers
+/// + rows). There is no checkbox, so monitoring OFF is shown as a single
+/// "monitoring off" line inside the card.
 private struct WindowSourceSection: View {
     let section: FleetSourceSection
-    /// 見出し行の文字列。nil は見出しなし (接続先がローカルのみ、またはローカルの
-    /// hidden 設定) で、カードだけを描く。
+    /// Header row string. nil means no header (the local endpoint is the only
+    /// one, or the local hidden setting), and only the card is drawn.
     let headerTitle: String?
     let onLocalFocus: (Pane) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             if let headerTitle {
-                // カード外のラベル。カード内テキストより一段小さく・薄くして、
-                // カード (中身) との階層差を付ける。横 4pt はカードの角丸の
-                // 湾曲とテキスト左端の視覚揃えのための微調整。
+                // Label outside the card. One step smaller and dimmer than the
+                // card's text to establish hierarchy against the card (content).
+                // The 4pt horizontal padding is a fine-tune for the visual
+                // alignment between the card's corner curve and the text's left edge.
                 Text(headerTitle)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -224,8 +235,8 @@ private struct WindowSourceSection: View {
                     }
                 }
             } else if section.state == .disabled {
-                // menu では見出しの checkbox が OFF を表すが、window に checkbox は
-                // ないため状態文字列 (「監視オフ」) を本文として出す。
+                // In menu the header checkbox conveys OFF, but window has no
+                // checkbox, so the state string ("monitoring off") is shown as the body.
                 card { stateMessage(MonitoredSourceState.disabled.message) }
             } else if let message = section.statusMessage {
                 card { stateMessage(message) }
@@ -233,8 +244,9 @@ private struct WindowSourceSection: View {
         }
     }
 
-    /// ウィンドウ背景から一段浮いた本文の面。quinary の塗りにヘアラインの縁を
-    /// 重ねて、ライト・ダークどちらの外観でも輪郭が残るようにする。
+    /// Body surface floated one step above the window background. A hairline
+    /// border is layered over the quinary fill so the outline stays visible in
+    /// both light and dark appearances.
     private func card(@ViewBuilder content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             content()
@@ -255,7 +267,7 @@ private struct WindowSourceSection: View {
         Text(message)
             .font(.callout)
             .foregroundStyle(.secondary)
-            // AgentGroupList の行テキストと同じ左端 (5 + 12 = 17pt)。
+            // Same left edge as AgentGroupList's row text (5 + 12 = 17pt).
             .padding(.horizontal, 17)
             .padding(.vertical, 4)
     }

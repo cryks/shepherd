@@ -1,106 +1,121 @@
-// herdr ソケット API (protocol 16) の JSON のうち、このアプリが読む範囲だけを型にする。
-// session.snapshot の agents 要素を Pane、workspaces 要素を Workspace で受け、
-// worktree.list の worktrees 要素を WorktreeEntry で受ける。
-// デコードは keyDecodingStrategy = .convertFromSnakeCase 前提で、
-// フィールド名は JSON の snake_case を camelCase にしたもの。未知のキーは無視される。
+// Types only for the portion of the herdr socket API (protocol 16) JSON that
+// this app reads. session.snapshot's agents elements are received as Pane and
+// its workspaces elements as Workspace; worktree.list's worktrees elements are
+// received as WorktreeEntry.
+// Decoding assumes keyDecodingStrategy = .convertFromSnakeCase, so field names
+// are the JSON's snake_case converted to camelCase. Unknown keys are ignored.
 
 import Foundation
 
-/// herdr が pane ごとに報告するエージェント状態。
-/// idle と done は「待機中」という同じ実体で、done は完了結果が herdr 上で未閲覧のときだけ付く。
-/// herdr 側で pane を閲覧すると done は idle に戻るため、このアプリは独自の既読管理を持たない。
+/// Agent status herdr reports per pane.
+/// idle and done are the same underlying "waiting" state; done applies only
+/// while the completion result is unviewed in herdr. Viewing the pane in herdr
+/// turns done back to idle, so this app keeps no read/unread tracking of its own.
 enum AgentStatus: String, Codable {
     case idle, working, blocked, done, unknown
 }
 
-/// session.snapshot の agents 要素。
-/// agent が nil の pane はエージェント pane ではない (素のシェルなど)。
+/// An agents element of session.snapshot.
+/// A pane with agent == nil is not an agent pane (a plain shell, etc.).
 struct Pane: Codable, Identifiable, Equatable {
-    /// 検出されたエージェント名 (claude, codex など)。nil なら監視対象外。
+    /// Detected agent name (claude, codex, ...). nil means not a watch target.
     var agent: String?
     var agentStatus: AgentStatus
     var paneId: String
     var workspaceId: String
-    /// ローカル行の agent.focus target に使う。pane ID は pane 移動で変わるが
-    /// terminal ID は安定する。リモート行は監視専用なので送信には使わない。
+    /// Used as the agent.focus target for local rows. The pane ID changes when
+    /// the pane moves, but the terminal ID is stable. Remote rows are
+    /// monitor-only and never used for sending.
     var terminalId: String?
-    /// スピナー等の装飾を除いたターミナルタイトル。エージェントの現在作業の表示に使う。
+    /// Terminal title with decorations like spinners stripped. Used to show the
+    /// agent's current work.
     var terminalTitleStripped: String?
-    /// pane の生成元などを表す herdr metadata。pane.created の時点では nil のことがあり、
-    /// agent検出直後のsnapshotではnilのことがあり、後続pollで値が入る。
+    /// herdr metadata describing the pane's origin and similar. May be nil at
+    /// pane.created time and in the snapshot right after agent detection; a
+    /// subsequent poll fills it in.
     var tokens: PaneTokens?
-    /// pane の workspace が git checkout を開いているとき、Store が worktree.list の
-    /// branch を書き込む。session.snapshot の JSON に対応キーはなくデコード直後は nil。
-    /// 非 git の workspace、detached HEAD、worktree.list の取得に失敗した poll では
-    /// nil のままで、サブ行は場所を出さない (cwd などの代替テキストで埋めない)。
+    /// When the pane's workspace opens a git checkout, Store writes the branch
+    /// from worktree.list here. session.snapshot's JSON has no corresponding
+    /// key, so it is nil right after decoding. It stays nil for non-git
+    /// workspaces, detached HEAD, and polls where the worktree.list fetch
+    /// failed; the sub-row then shows no location (no fallback text like cwd).
     var branch: String? = nil
 
     var id: String { paneId }
 
-    /// 一覧 (メニュー・監視ウィンドウ) のメイン行に出す文言。
-    /// 作業タイトルが空の間 (エージェント起動直後など) はエージェント名で埋める。
+    /// Text for the main row in lists (menu, monitor window).
+    /// While the work title is empty (e.g. right after the agent starts), the
+    /// agent name fills in.
     var displayTitle: String {
         if let title = terminalTitleStripped, !title.isEmpty { return title }
         return agent ?? "?"
     }
 
-    /// 一覧のサブ行に出す「誰が・どこで」のテキスト表示。
-    /// マークアセットを持つ agent のサブ行は AgentRow がアイコン + branch で組むため、
-    /// これはマークの無い agent 用のフォールバック。branch が無い pane は agent 名だけを出す。
+    /// Text form of the "who and where" sub-row in lists.
+    /// For agents with a mark asset, AgentRow composes the sub-row as icon +
+    /// branch, so this is the fallback for agents without a mark. A pane
+    /// without a branch shows only the agent name.
     var displaySubtitle: String {
         guard let branch else { return agent ?? "?" }
         return "\(agent ?? "?") — \(branch)"
     }
 }
 
-/// herdr が pane に付与する metadata のうち、Shepherd が読む範囲。
-/// agent_kind は将来追加される値でも pane 全体をデコードできるよう String で保持する。
+/// The portion of the metadata herdr attaches to a pane that Shepherd reads.
+/// agent_kind is kept as String so the whole pane still decodes when values are
+/// added in the future.
 struct PaneTokens: Codable, Equatable {
-    /// pane の生成元。サブエージェントでは `"subagent"`、metadata 未付与または
-    /// herdr が生成元を分類しない pane では nil。
+    /// The pane's origin. `"subagent"` for subagents; nil when metadata is
+    /// missing or herdr does not classify the pane's origin.
     var agentKind: String?
 }
 
-/// session.snapshot の workspaces 要素。監視ウィンドウのグループ見出しと並び順に使う。
+/// A workspaces element of session.snapshot. Used for the monitor window's
+/// group headings and ordering.
 struct Workspace: Codable, Identifiable, Equatable {
     var workspaceId: String
     var label: String?
-    /// herdr UI 上の表示番号。グループの並び順に使う。
+    /// Display number in the herdr UI. Used for group ordering.
     var number: Int
-    /// workspace が git checkout を開いているときだけ付く。非 git の workspace では nil。
+    /// Present only when the workspace opens a git checkout; nil for non-git
+    /// workspaces.
     var worktree: WorkspaceWorktree? = nil
 
     var id: String { workspaceId }
 }
 
-/// session.snapshot の workspace が持つ worktree metadata のうち読む範囲。
-/// 同じ repo を開いた workspace 同士の対応付けに使う。
+/// The portion of the worktree metadata on a session.snapshot workspace that is
+/// read. Used to correlate workspaces that opened the same repo.
 struct WorkspaceWorktree: Codable, Equatable {
-    /// repo root の .git パス。root checkout と linked worktree で同じ値になり、
-    /// linked worktree の pane を root checkout のグループへ寄せるキーになる。
+    /// The repo root's .git path. Same value for the root checkout and linked
+    /// worktrees, serving as the key that merges linked-worktree panes into the
+    /// root checkout's group.
     var repoKey: String
-    /// true は `git worktree add` で作られた checkout。false は repo root の checkout で、
-    /// 監視一覧では linked worktree の合流先になる。
+    /// true for a checkout created with `git worktree add`. false for the repo
+    /// root's checkout, which becomes the merge target for linked worktrees in
+    /// the monitor list.
     var isLinkedWorktree: Bool
 }
 
-// MARK: - RPC エンベロープ
+// MARK: - RPC envelope
 
 struct RPCError: Codable, Error {
     var code: String
     var message: String
 }
 
-/// 一発 RPC のレスポンス行。result と error は排他。
+/// Response line of a one-shot RPC. result and error are mutually exclusive.
 struct RPCResponse<R: Codable>: Codable {
     var id: String?
     var result: R?
     var error: RPCError?
 }
 
-/// `session.snapshot` が返す bootstrap payload。Shepherd は全 pane ではなく
-/// agent として検出済みの行、およびそのグループ見出しに必要な workspace だけを読む。
-/// version と protocol は同じ取得結果に含まれるため、別の ping RPC を挟まない。
+/// Bootstrap payload returned by `session.snapshot`. Shepherd reads not every
+/// pane but only rows detected as agents, plus the workspaces needed for their
+/// group headings.
+/// version and protocol come in the same fetch result, so no separate ping RPC
+/// is inserted.
 struct HerdrSessionSnapshot: Codable {
     var version: String
     var protocolVersion: Int
@@ -115,25 +130,29 @@ struct HerdrSessionSnapshot: Codable {
     }
 }
 
-/// `session.snapshot` の result は型名と snapshot 本体を 1 段包む。
-/// 未使用の `type` は decoder が無視し、Store へは snapshot 本体だけを渡す。
+/// The result of `session.snapshot` wraps the type name and the snapshot body
+/// one level deep. The unused `type` is ignored by the decoder, and only the
+/// snapshot body is passed to Store.
 struct SessionSnapshotResult: Codable {
     var snapshot: HerdrSessionSnapshot
 }
 
-/// `worktree.list` の result。params の workspace_id が属する repo の checkout 一覧を返す。
-/// Shepherd はブランチ名の表示に使う範囲だけを読む。
+/// Result of `worktree.list`. Returns the checkout list of the repo that the
+/// workspace_id in params belongs to. Shepherd reads only what it needs to show
+/// branch names.
 struct WorktreeListResult: Codable {
     var worktrees: [WorktreeEntry]
 }
 
-/// worktree.list の worktrees 要素。root checkout と linked worktree の両方が含まれる。
+/// A worktrees element of worktree.list. Includes both the root checkout and
+/// linked worktrees.
 struct WorktreeEntry: Codable {
-    /// checkout しているブランチ名。detached HEAD では nil。
+    /// Name of the checked-out branch. nil for detached HEAD.
     var branch: String?
-    /// この checkout を開いている workspace の ID。どの workspace でも開かれていなければ nil。
+    /// ID of the workspace that has this checkout open. nil if no workspace has
+    /// it open.
     var openWorkspaceId: String?
 }
 
-/// result の中身を読まない RPC (agent.focus など) 用。
+/// For RPCs whose result body is not read (agent.focus, etc.).
 struct EmptyResult: Codable {}

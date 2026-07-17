@@ -1,7 +1,7 @@
-// RemoteTunnel が `/usr/bin/ssh` へ渡す argv と stdin の契約を固定する。
-// status は固定 resolver script を remote `/bin/sh -s` へ渡し、常駐 tunnel は stdin を
-// `/dev/null` に閉じる。非対話認証、multiplex 無効化、session grammar、managed binary path、
-// stream-local socket の区切りを扱う。
+// Pins the argv and stdin contract that RemoteTunnel passes to `/usr/bin/ssh`.
+// status feeds a fixed resolver script to the remote `/bin/sh -s`, while the long-lived
+// tunnel closes stdin to `/dev/null`. Covers non-interactive authentication, multiplexing
+// disablement, session grammar, managed binary paths, and stream-local socket delimiting.
 
 import XCTest
 @testable import Shepherd

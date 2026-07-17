@@ -4,16 +4,17 @@ import PackageDescription
 let package = Package(
     name: "Shepherd",
     platforms: [
-        // Window シーンの defaultLaunchBehavior(.suppressed) / restorationBehavior(.disabled)
-        // (メニューバー常駐アプリで監視ウィンドウが起動時に勝手に開くのを防ぐ) が macOS 15 から。
+        // defaultLaunchBehavior(.suppressed) / restorationBehavior(.disabled) on Window scenes
+        // (prevents the monitoring window of this menu-bar-resident app from opening on its own
+        // at launch) requires macOS 15.
         .macOS(.v15)
     ],
     targets: [
         .executableTarget(
             name: "Shepherd",
             resources: [
-                // エージェント種類のブランドマーク PDF 群。AgentIcons が
-                // Bundle.module の AgentMarks/ サブディレクトリとして読む。
+                // Brand-mark PDFs for each agent kind. AgentIcons reads them
+                // from the AgentMarks/ subdirectory of Bundle.module.
                 .copy("Resources/AgentMarks")
             ],
             swiftSettings: [

@@ -1,25 +1,28 @@
-// README 用スクリーンショットのヘッドレス描画。`Shepherd --render-screenshots <dir>`
-// で起動されたときだけ動き、モックの FleetStore で実物の MenuPanel を組み立てて
-// PNG に書き出したらプロセスを終える。herdr・SSH・UserDefaults の実設定には
-// 依存せず、ウィンドウを画面へ表示しないため、開発機でも CI でも同じ絵が出る
-// (フォントレンダリングの差だけ OS バージョンに依存する)。
+// Headless rendering of the README screenshots. Runs only when launched as
+// `Shepherd --render-screenshots <dir>`: it assembles the real MenuPanel with a
+// mock FleetStore, writes it out as PNGs, then exits the process. It depends on
+// no real herdr, SSH, or UserDefaults configuration and never shows a window on
+// screen, so a dev machine and CI produce the same image (only font rendering
+// differs by OS version).
 //
-// データはテストと同じ注入口で固定する: ローカルとリモートの Store へ
-// .ready(AgentSnapshot) を直接与え、tunnel は常に ready を返すスタブにする。
-// FleetStore.start() は呼ばないので poll も RPC も走らない。
+// Data is pinned through the same injection points as the tests: the local and
+// remote Stores are given .ready(AgentSnapshot) directly, and the tunnel is a
+// stub that always reports ready. FleetStore.start() is never called, so no
+// poll or RPC runs.
 //
-// README は英語版と日本語版があるため、LanguageSetting を切り替えて
-// menu-panel.png (英語) と menu-panel-ja.png (日本語) の 2 枚を書き出す。
-// 出力は論理サイズの 2 倍の PNG で、README 側は width を論理サイズに固定して
-// Retina でも縁が滲まないようにする。
+// The README has English and Japanese editions, so we toggle LanguageSetting
+// and write two images: menu-panel.png (English) and menu-panel-ja.png
+// (Japanese). Output PNGs are 2x the logical size; the README pins the width to
+// the logical size so edges stay crisp on Retina displays.
 
 import AppKit
 import SwiftUI
 
 @MainActor
 enum ScreenshotRenderer {
-    /// コマンドラインに `--render-screenshots <dir>` があればスクリーンショットを
-    /// 書き出して true を返す。true のとき呼び出し側はアプリを起動せず main を抜ける。
+    /// If the command line contains `--render-screenshots <dir>`, writes the
+    /// screenshots and returns true. When true, the caller skips launching the
+    /// app and exits main.
     static func runIfRequested() -> Bool {
         let arguments = CommandLine.arguments
         guard let flagIndex = arguments.firstIndex(of: "--render-screenshots") else {
@@ -36,8 +39,9 @@ enum ScreenshotRenderer {
     }
 
     private static func render(into directory: URL) {
-        // NSWindow を作るために NSApplication を初期化する。prohibited で
-        // Dock アイコンもメニューバーも出さず、ウィンドウも orderFront しない。
+        // Initialize NSApplication so we can create an NSWindow. With
+        // .prohibited, no Dock icon or menu bar appears, and the window is
+        // never ordered front.
         NSApplication.shared.setActivationPolicy(.prohibited)
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -45,8 +49,9 @@ enum ScreenshotRenderer {
             fatalError("出力ディレクトリ作成失敗: \(directory.path) \(error)")
         }
 
-        // ローカル見出し (This Mac / この Mac) を既定表記に固定し、
-        // 実行環境の UserDefaults に残った表示設定を絵へ持ち込まない。
+        // Pin the local heading (This Mac / この Mac) to the default wording so
+        // display settings left in the running environment's UserDefaults don't
+        // leak into the image.
         LocalSectionTitleSetting.shared.style = .standard
         let store = makeStore()
         let variants: [(language: AppLanguage, filename: String)] = [
@@ -62,9 +67,9 @@ enum ScreenshotRenderer {
         }
     }
 
-    /// ローカル 2 workspace + リモート 1 台のモック。working / blocked / done の
-    /// 3 状態、ブランドマーク 2 種 (claude, codex)、ブランチ表示、接続先見出しが
-    /// 1 枚に収まる最小構成にする。
+    /// Mock with 2 local workspaces + 1 remote host. The smallest configuration
+    /// that fits, in a single image, the three states working / blocked / done,
+    /// two brand marks (claude, codex), branch display, and connection headings.
     private static func makeStore() -> FleetStore {
         let localSnapshot = AgentSnapshot(
             agents: [
@@ -131,10 +136,11 @@ enum ScreenshotRenderer {
     private static func writePanelImage(store: FleetStore, to url: URL) {
         let hosting = NSHostingView(rootView: PanelScreenshot(store: store))
         hosting.appearance = NSAppearance(named: .aqua)
-        // orderFront しないオフスクリーンウィンドウ。MenuPanel はリスト実寸を
-        // onGeometryChange で @State に取り込んで自分の高さを決めるため、
-        // ビュー単体の 1 回のレイアウトでは高さが確定しない。ウィンドウに載せて
-        // RunLoop を回し、実寸反映 → 再レイアウトを収束させてから描画する。
+        // An offscreen window that is never ordered front. MenuPanel determines
+        // its own height by capturing the list's actual size into @State via
+        // onGeometryChange, so a single standalone layout pass of the view does
+        // not settle the height. We mount it in a window and spin the RunLoop so
+        // the measured size feeds back and re-layout converges before drawing.
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 600, height: 900),
             styleMask: [.borderless],
@@ -173,10 +179,12 @@ enum ScreenshotRenderer {
     }
 }
 
-/// MenuPanel をパネル風の面に載せた撮影用構図。実物のパネル面 (素材背景と
-/// 円換算約 14pt の角丸) は MenuBarExtra のウィンドウとして OS が描くため、
-/// ヘッドレスでは背景色 + 同じ角丸 + 影で置き換える。外周の padding は
-/// 影が切れずに収まる余白で、書き出した PNG では透明になる。
+/// Composition for the shot: MenuPanel placed on a panel-like surface. The real
+/// panel surface (material background and roughly 14pt rounded corners) is
+/// drawn by the OS as the MenuBarExtra's window, so headless rendering
+/// substitutes a background color + the same corner radius + a shadow. The
+/// outer padding is the margin that keeps the shadow from being clipped and is
+/// transparent in the exported PNG.
 private struct PanelScreenshot: View {
     let store: FleetStore
 
@@ -194,8 +202,9 @@ private struct PanelScreenshot: View {
     }
 }
 
-/// 生成時から ready を返すスタブ tunnel。SSH process は起動せず、
-/// MonitoredSource が tunnel ready を前提に remote snapshot を公開する経路だけを満たす。
+/// Stub tunnel that reports ready from creation. It launches no SSH process and
+/// satisfies only the path where MonitoredSource publishes the remote snapshot
+/// on the assumption that the tunnel is ready.
 @MainActor
 private final class StaticReadyTunnel: RemoteTunnelManaging {
     let configuration: RemoteSourceConfiguration

@@ -1,6 +1,7 @@
-// 複数 source の ready snapshot を 1 個のメニューバー状態へ集約する契約を検証する。
-// SSH や Unix socket は使わず、接続先ごとに同じ pane ID があり得る条件と、
-// 一部 source が未接続で snapshot を出さない条件を値だけで再現する。
+// Verifies the contract that aggregates the ready snapshots of multiple sources
+// into a single menu bar state. Without using SSH or Unix sockets, it reproduces
+// with plain values the conditions where the same pane ID can exist per endpoint
+// and where some sources are disconnected and produce no snapshot.
 
 import Foundation
 import XCTest
@@ -27,7 +28,7 @@ final class FleetStoreTests: XCTestCase {
     func test一部が未接続でもReadyの接続先を表示状態に使う() {
         let readyRemote = snapshot(status: .working, paneID: "w2:p1")
 
-        // 未接続 source は snapshot 配列へ入らない。1 件でも ready ならその状態を使う。
+        // Disconnected sources do not enter the snapshot array. If even one is ready, its state is used.
         XCTAssertEqual(FleetStore.aggregateMenuBarState([readyRemote]), .working)
         XCTAssertEqual(FleetStore.aggregateMenuBarState([]), .disconnected)
     }
@@ -40,13 +41,13 @@ final class FleetStoreTests: XCTestCase {
 
     @MainActor
     func testローカルと有効な複数Remoteを独立して開始停止する() throws {
-        // headerTitle の期待値は表示言語に依存するため、
-        // 実行マシンの OS 言語に左右されないよう base 言語 (英語) へ固定する。
+        // The expected headerTitle values depend on the display language, so pin it
+        // to the base language (English) so the host machine's OS language cannot affect them.
         let originalLanguage = LanguageSetting.shared.selection
         LanguageSetting.shared.selection = .english
         defer { LanguageSetting.shared.selection = originalLanguage }
 
-        // ローカルの headerTitle は見出し設定にも依存するため standard へ固定する。
+        // The local headerTitle also depends on the section-title setting, so pin it to standard.
         let originalTitleStyle = LocalSectionTitleSetting.shared.style
         LocalSectionTitleSetting.shared.style = .standard
         defer { LocalSectionTitleSetting.shared.style = originalTitleStyle }
@@ -227,7 +228,7 @@ final class FleetStoreTests: XCTestCase {
         XCTAssertTrue(tunnels.isEmpty, "表示 OFF の remote が tunnel を作った")
         XCTAssertEqual(fleet.menuBarState, .disconnected)
 
-        // 表示 ON へ戻すと、保持されていた isEnabled == true がそのまま監視を再開する。
+        // Turning visibility back on resumes monitoring using the preserved isEnabled == true as-is.
         try fleet.setRemoteVisible(id: remote.id, isVisible: true)
         XCTAssertEqual(persisted.first?.isVisible, true)
         XCTAssertEqual(persisted.first?.isEnabled, true)
@@ -237,7 +238,7 @@ final class FleetStoreTests: XCTestCase {
         XCTAssertEqual(tunnels.first?.startCallCount, 1)
         XCTAssertEqual(fleet.menuBarState, .blocked)
 
-        // 表示 OFF は監視 ON の remote も止めるが、isEnabled は書き換えない。
+        // Turning visibility off also stops a monitoring-enabled remote, but does not rewrite isEnabled.
         try fleet.setRemoteVisible(id: remote.id, isVisible: false)
         XCTAssertEqual(persisted.first?.isVisible, false)
         XCTAssertEqual(persisted.first?.isEnabled, true)
@@ -442,7 +443,7 @@ final class FleetStoreTests: XCTestCase {
         let firstSource = try XCTUnwrap(fleet.monitoredSource(id: first.id))
         let thirdSource = try XCTUnwrap(fleet.monitoredSource(id: third.id))
 
-        // 末尾 (index 2) を先頭へ。onMove が渡す (IndexSet, Int) をそのまま使う。
+        // Move the last item (index 2) to the front, using the (IndexSet, Int) that onMove passes as-is.
         try fleet.moveRemote(fromOffsets: IndexSet(integer: 2), toOffset: 0)
 
         XCTAssertEqual(saved.map(\.id), [third.id, first.id, disabled.id])
@@ -496,7 +497,7 @@ final class FleetStoreTests: XCTestCase {
         let localBefore = localCounter.count
         let remoteBefore = remoteCounters[0].count
 
-        // スリープ移行中に監視ONになったsourceも、復帰までpollを始めない。
+        // A source whose monitoring is enabled during the sleep transition also does not start polling until resume.
         try fleet.setRemoteEnabled(id: dormant.id, isEnabled: true)
         try? await Task.sleep(for: .milliseconds(30))
         XCTAssertEqual(localCounter.count, localBefore, "suspend中にlocalがpollした")
@@ -554,8 +555,8 @@ final class FleetStoreTests: XCTestCase {
         )
     }
 
-    /// poll回数だけを数える即時応答のStore。スリープ中にpollが止まる境界を
-    /// 実socketなしで観測する。
+    /// An immediately responding Store that only counts poll calls. Observes the
+    /// boundary where polling stops during sleep without a real socket.
     @MainActor
     private func countingStore(
         counter: CallCounter,
@@ -585,7 +586,7 @@ final class FleetStoreTests: XCTestCase {
         return true
     }
 
-    /// XCTestExpectationを固定できないpoll回数の増加を、MainActorへ戻った状態変化として待つ。
+    /// Waits for an increase in poll count, which cannot be pinned to an XCTestExpectation, as a state change observed back on the MainActor.
     @MainActor
     private func waitUntil(
         timeout: Duration = .seconds(1),
@@ -600,7 +601,7 @@ final class FleetStoreTests: XCTestCase {
         return condition()
     }
 
-    /// enqueue済みのMainActor taskへexecutorを譲り、suspend直前のRPC完了を待ち切る。
+    /// Yields the executor to already-enqueued MainActor tasks, fully waiting out RPC completions in flight just before suspend.
     @MainActor
     private func drainMainActor() async {
         for _ in 0..<20 {
@@ -630,7 +631,7 @@ private enum FleetTestError: Error, Equatable {
     case saveFailed
 }
 
-/// dataSourceの@SendableクロージャからRPC回数を数えるためのロック付きカウンタ。
+/// A lock-guarded counter for counting RPC calls from the dataSource's @Sendable closures.
 private final class CallCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0

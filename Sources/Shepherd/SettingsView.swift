@@ -1,13 +1,14 @@
-// Settings シーンの UI。一般設定とリモート監視先をタブで分ける。
-// リモート編集は RemoteSourceConfiguration の validation を通った値だけを
-// FleetStore へ渡し、SSH の password や秘密鍵は保存しない。認証・ProxyJump・鍵の
-// 選択は `/usr/bin/ssh` が `~/.ssh/config` と ssh-agent から解決する。
+// UI for the Settings scene. General settings and remote monitoring targets
+// are separated into tabs. Remote editing passes only values that passed
+// RemoteSourceConfiguration validation to FleetStore, and no SSH passwords or
+// private keys are stored. Authentication, ProxyJump, and key selection are
+// resolved by `/usr/bin/ssh` from `~/.ssh/config` and ssh-agent.
 
 import SwiftUI
 
-/// エージェントのブランドマークをカラー表示するかの UserDefaults キー。
-/// SettingsView が書き、AgentRow が読む。両者とも @AppStorage で参照するので
-/// 切り替えは開いている行の表示へ即時反映される。
+/// UserDefaults key for whether agent brand marks are shown in color.
+/// SettingsView writes it and AgentRow reads it. Both reference it via
+/// @AppStorage, so toggling is reflected immediately in the rows currently on screen.
 let colorAgentIconsKey = "ColorAgentIcons"
 
 struct SettingsView: View {
@@ -368,9 +369,10 @@ private struct RemoteSourceEditor: View {
     }
 
     private var candidate: RemoteSourceConfiguration {
-        // 表示状態は設定一覧のトグルが、監視状態はメニューパネルの checkbox が所有し、
-        // FleetStore.updateRemote が保存直前の値を維持する。ここでは editor を開いた
-        // 時点の値で validation する。
+        // Visibility is owned by the toggle in the settings list and monitoring
+        // state by the menu panel checkbox; FleetStore.updateRemote preserves
+        // the values as of just before saving. Here, validation uses the values
+        // from when the editor was opened.
         RemoteSourceConfiguration(
             id: context.configuration.id,
             label: label,

@@ -1,19 +1,23 @@
-// エージェント 1 匹分の行 (AgentRow) と、workspace ごとの見出し付き一覧
-// (AgentGroupList)。監視ウィンドウとメニューバーパネルの両方で使う共通部品で、
-// 行の構成や見出しの体裁を変える拡張はこのファイルだけで両方の表示に反映される。
-// AgentRow は左に StatusIcons の丸 (メニューバー本体と同じ描画)、右に作業タイトルと
-// サブ行 (エージェントのブランドマーク + ブランチ名) の 2 行 + ステータス文字列。
-// ホバー時の強調だけは、行を置く面のネイティブ流儀に合わせるため HoverStyle で切り替える。
-// ローカル source の行は agent.focus を持つ Button、リモート source の行は監視専用の
-// 静的表示になる。どちらも同じ行レイアウトを共有し、操作できない行を disabled の
-// 薄い表示にはしない。
+// A single agent's row (AgentRow) and the per-workspace headed list
+// (AgentGroupList). Shared components used by both the monitor window and the
+// menu bar panel, so changes to the row layout or heading styling made in this
+// file alone propagate to both surfaces.
+// AgentRow shows the StatusIcons circle on the left (same rendering as the menu
+// bar itself), and on the right two lines — the work title and a sub-line
+// (agent brand mark + branch name) — plus a status string.
+// Only the hover highlight is switched via HoverStyle, to match the native
+// idiom of the surface the row is placed on. Rows from a local source are
+// Buttons carrying agent.focus; rows from a remote source are static,
+// monitor-only displays. Both share the same row layout, and non-interactive
+// rows are not dimmed with a disabled appearance.
 
 import AppKit
 import SwiftUI
 
-/// workspace ごとの見出し (caption) + AgentRow の縦積み。スクロールや寸法の管理は
-/// 持たないので、呼び出し側が ScrollView などで包む。行クリック時の動作
-/// (pane フォーカスに加えてパネルを閉じるか等) は onFocus で呼び出し側が決める。
+/// Per-workspace heading (caption) + vertically stacked AgentRows. Owns no
+/// scrolling or sizing, so the caller wraps it in a ScrollView or similar.
+/// The click behavior of a row (whether to close the panel in addition to
+/// focusing the pane, etc.) is decided by the caller via onFocus.
 struct AgentGroupList: View {
     let sourceID: HerdrSourceID
     let groups: [(workspace: Workspace, panes: [Pane])]
@@ -57,11 +61,13 @@ struct AgentGroupList: View {
                 }
             }
         }
-        // 横 5pt はハイライトが面の端から持つインセットで、MenuPanel 下部の
-        // MenuItem と同じ値。見出し・行内の 12pt (テキストインセット) と合算した
-        // 17pt が、面の端からのテキスト開始位置として全行で揃う。
-        // 縦の余白は持たない。source 見出しとの間隔・セクション間・面の端までの
-        // 距離は置かれる文脈で値が違うため、SourceList 側が所有する。
+        // The horizontal 5pt is the inset the highlight keeps from the edge of
+        // the surface, the same value as the MenuItems at the bottom of
+        // MenuPanel. Combined with the 12pt text inset inside headings and
+        // rows, text starts 17pt from the surface edge, aligned across all rows.
+        // No vertical padding here: the gap to the source heading, between
+        // sections, and to the surface edge differ per placement context, so
+        // SourceList owns those values.
         .padding(.horizontal, 5)
     }
 
@@ -78,20 +84,22 @@ struct AgentGroupList: View {
 }
 
 struct AgentRow: View {
-    /// ホバー時の強調表示。同じ行を監視ウィンドウの List とメニューパネルに置くが、
-    /// ネイティブでの選択表現が面ごとに違うため呼び出し側が選ぶ。
+    /// Hover highlight style. The same row is placed in both the monitor
+    /// window's List and the menu panel, but the native selection idiom differs
+    /// per surface, so the caller chooses.
     enum HoverStyle {
-        /// 監視ウィンドウの List 向け。控えめなグレー (quaternary) を敷くだけで前景色は変えない。
+        /// For the monitor window's List. Lays down a subtle gray (quaternary) only; foreground colors are unchanged.
         case list
-        /// メニューバーパネル向け。NSMenu の選択状態 (アクセント色背景 + 選択前景色) を
-        /// 再現し、MenuPanel 下部の MenuItem と見た目を揃える。
+        /// For the menu bar panel. Reproduces NSMenu's selection state (accent
+        /// color background + selected foreground color) to match the MenuItems
+        /// at the bottom of MenuPanel.
         case menu
     }
 
     let pane: Pane
     let hoverStyle: HoverStyle
-    /// 行クリック時の駆けつけ動作。nil は remote の監視専用行を表し、
-    /// Button と hover feedback を作らない。
+    /// Jump-to action on row click. nil marks a remote, monitor-only row,
+    /// which gets no Button and no hover feedback.
     let onFocus: (() -> Void)?
 
     @State private var isHovered = false
@@ -110,8 +118,9 @@ struct AgentRow: View {
         }
         .padding(.vertical, 3)
         .padding(.horizontal, 12)
-        // 前景色はここで一括して切り替える。subtitle の .secondary や template 描画の
-        // マークは階層スタイルとしてこの色から派生するため、menu の反転に個別対応が要らない。
+        // The foreground color is switched in one place here. The subtitle's
+        // .secondary and the template-rendered mark derive from this color as
+        // hierarchical styles, so the menu inversion needs no per-element handling.
         .foregroundStyle(isMenuHighlighted ? Color(nsColor: .selectedMenuItemTextColor) : Color.primary)
         .background(
             hoverBackground,
@@ -131,8 +140,10 @@ struct AgentRow: View {
                     Spacer()
                     Text(pane.agentStatus.rawValue)
                         .font(.caption)
-                        // ネイティブメニューは選択中の文字を選択前景色へ一律に反転するので、
-                        // menu のホバー中だけステータスの意味色を外して親の前景色に従える。
+                        // Native menus uniformly invert selected text to the
+                        // selected foreground color, so only while hovered in
+                        // menu style we drop the status's semantic color and
+                        // follow the parent foreground color instead.
                         .foregroundStyle(
                             isMenuHighlighted
                                 ? AnyShapeStyle(.primary)
@@ -148,8 +159,9 @@ struct AgentRow: View {
         .contentShape(Rectangle())
     }
 
-    /// menu 流儀のホバー中か。前景色の反転はこの状態だけで行い、
-    /// list 流儀は背景を敷くだけで文字色を通常表示のまま保つ。
+    /// Whether we are hovered in menu style. The foreground color inversion
+    /// happens only in this state; list style lays down a background only and
+    /// keeps text colors at their normal appearance.
     private var isMenuHighlighted: Bool { isHovered && hoverStyle == .menu }
 
     private var hoverBackground: AnyShapeStyle {
@@ -160,8 +172,9 @@ struct AgentRow: View {
         }
     }
 
-    /// menu は MenuPanel の MenuItem (半径 9 = パネル外形の角丸約 14pt − インセット 5pt
-    /// の同心値) と角丸を合わせ、同一パネル内でハイライトの形を揃える。
+    /// menu matches the corner radius of MenuPanel's MenuItems (radius 9 = the
+    /// concentric value of the panel's ~14pt outer corner radius minus the 5pt
+    /// inset), keeping highlight shapes consistent within the same panel.
     private var hoverCornerRadius: CGFloat {
         switch hoverStyle {
         case .list: 6
@@ -169,13 +182,14 @@ struct AgentRow: View {
         }
     }
 
-    /// サブ行。マークアセットを持つ agent は「ブランドマーク + ブランチ名」で示し、
-    /// agent 名の文字列はホバーの tooltip に退避する。branch が無い pane
-    /// (非 git・detached HEAD・取得失敗) はマークだけを出す。マークが無い agent は
-    /// displaySubtitle のテキスト表示のまま。
-    /// マークの塗りは設定 (colorAgentIconsKey) で切り替える。mono は黒塗りアセットを
-    /// template 描画してサブ行の secondary 前景色とダークモードに追従させ、
-    /// color はブランド色を残すため original 描画にする。
+    /// The sub-line. Agents with a mark asset are shown as "brand mark +
+    /// branch name", with the agent name string relegated to the hover tooltip.
+    /// Panes without a branch (non-git, detached HEAD, fetch failure) show the
+    /// mark only. Agents without a mark keep the displaySubtitle text.
+    /// The mark's fill is switched by the setting (colorAgentIconsKey): mono
+    /// renders the solid-black asset as a template so it follows the sub-line's
+    /// secondary foreground color and dark mode; color renders the original to
+    /// preserve the brand colors.
     @ViewBuilder
     private var subtitle: some View {
         let style: AgentIconStyle = colorAgentIcons ? .color : .mono
@@ -199,9 +213,10 @@ struct AgentRow: View {
 }
 
 extension AgentStatus {
-    /// 状態の意味色。AgentRow のステータス文字列と、ポップアウトウィンドウの
-    /// ヘッダーサマリのドットが共用する。メニューバー丸 (StatusIcons) の
-    /// systemYellow / systemGreen / systemRed と同系色で、視覚言語を揃える。
+    /// Semantic color for each state. Shared by AgentRow's status string and
+    /// the dots in the pop-out window's header summary. Matches the color
+    /// family of the menu bar circles (StatusIcons: systemYellow / systemGreen
+    /// / systemRed) to keep the visual language consistent.
     var indicatorColor: Color {
         switch self {
         case .working: .yellow

@@ -1,6 +1,7 @@
-// linked worktree の pane を root checkout のグループへ合流させる表示規則と、
-// worktree.list から引いた branch 名の Pane への反映を検証する。
-// RPC は closure 差し替えで即時応答させ、実 socket や poll 周期には依存しない。
+// Verifies the display rule that merges panes of linked worktrees into the root
+// checkout's group, and the propagation of branch names fetched from worktree.list
+// into Panes. RPCs respond immediately via swapped-in closures and do not depend
+// on a real socket or the poll interval.
 
 import Foundation
 import XCTest
@@ -9,7 +10,7 @@ import XCTest
 final class WorktreeTests: XCTestCase {
     private let repoKey = "/repo/shepherd/.git"
 
-    // MARK: - グルーピング
+    // MARK: - Grouping
 
     @MainActor
     func testLinkedWorktreeのPaneをRootのグループへ合流させる() {
@@ -28,7 +29,7 @@ final class WorktreeTests: XCTestCase {
         XCTAssertEqual(groups.count, 1)
         XCTAssertEqual(groups.first?.workspace.workspaceId, "w1")
         XCTAssertEqual(groups.first?.workspace.label, "shepherd")
-        // pane 番号 (p2 > p1) より workspace 番号を優先し、root の pane を先に出す。
+        // Workspace number takes precedence over pane number (p2 > p1), so the root's pane comes first.
         XCTAssertEqual(groups.first?.panes.map(\.paneId), ["w1:p2", "w2:p1"])
     }
 
@@ -72,7 +73,7 @@ final class WorktreeTests: XCTestCase {
         )
     }
 
-    // MARK: - branch 名の反映
+    // MARK: - Branch name propagation
 
     @MainActor
     func testWorktreeListのBranchをRootとWorktreeの両Paneへ書き込む() async {
@@ -108,15 +109,15 @@ final class WorktreeTests: XCTestCase {
 
         XCTAssertEqual(store.panes["w1:p1"]?.branch, "main")
         XCTAssertEqual(store.panes["w2:p1"]?.branch, "feature/x")
-        // w1 への応答が同じ repo の w2 も解決するため、問い合わせは 1 回で済む。
+        // The response for w1 also resolves w2 in the same repo, so a single query suffices.
         XCTAssertEqual(recorder.workspaceIDs, ["w1"])
     }
 
     @MainActor
     func testWorktreeMetadataの無いGitWorkspaceにもBranchを書き込む() async {
-        // session.snapshot は git repo の workspace でも worktree metadata を
-        // 付けないことがある (protocol 16 で実測)。metadata の有無で問い合わせを
-        // 絞らないことを確かめる。
+        // session.snapshot may omit worktree metadata even for a git repo workspace
+        // (observed with protocol 16). Confirms that queries are not filtered by the
+        // presence of metadata.
         let serverSnapshot = makeSnapshot(
             agents: [makePane(id: "w4:p1", workspaceId: "w4")],
             workspaces: [Workspace(workspaceId: "w4", label: "signage", number: 4)]
@@ -161,7 +162,7 @@ final class WorktreeTests: XCTestCase {
         XCTAssertTrue(ready)
 
         XCTAssertNil(store.panes["w2:p1"]?.branch)
-        // マーク無し agent 用のフォールバック文字列も cwd では埋めず、agent 名だけになる。
+        // The fallback string for unmarked agents is also not filled with the cwd; it is just the agent name.
         XCTAssertEqual(store.panes["w2:p1"]?.displaySubtitle, "claude")
     }
 
@@ -263,7 +264,7 @@ private enum StubError: Error {
     case worktreeList
 }
 
-/// worktree.list の呼び出し対象 workspace を @Sendable closure から記録する。
+/// Records the workspaces targeted by worktree.list calls from a @Sendable closure.
 private final class CallRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var recorded: [String] = []

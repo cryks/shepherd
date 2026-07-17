@@ -1,6 +1,6 @@
-// herdr の tokens metadata のデコードと、AgentSnapshot が親エージェントだけを保持する
-// 契約を検証する。イベントストリームや RPC は起動せず、list サイクルごとの
-// metadata の有無による対象判定を扱う。
+// Verifies decoding of herdr's tokens metadata and the contract that AgentSnapshot
+// keeps only parent agents. No event stream or RPC is started; the tests cover
+// tracking decisions based on metadata presence in each list cycle.
 
 import XCTest
 @testable import Shepherd

@@ -1,29 +1,37 @@
-// 1 つの herdr endpoint の観測状態。session.snapshot の protocol、agents、workspaces を
-// 1 回の値として読み、MainActor 上の表示 snapshot へ載せ替える。
+// Observed state of a single herdr endpoint. Reads session.snapshot's protocol,
+// agents, and workspaces as one value and transfers them onto a display snapshot
+// on the MainActor.
 //
-// 同期の契約:
-//   - events.subscribe は使わない。Herdr のイベントは履歴を再送せず、pane.updated は
-//     field 単位で絞れないため、監視対象外の更新を含む高頻度streamを接続ごとに持たない
-//   - start() は直ちに 1 回取得し、以後は source ごとの pollInterval で取り直す。ローカルは
-//     500ms、リモートは保存設定 (既定2秒) を FleetStore が渡す
-//   - poll tick と取得が重なった場合は進行中の1本を待つ。完了直後の追加取得は行わず、
-//     次のtickで最新状態へ追従するため、遅いendpointでRPCを積み上げない
-//   - snapshot は agents と workspaces を同じserver captureから返す。protocol一致後の
-//     最初の応答からreadyとして公開する
-//   - ブランチ名だけは session.snapshot に含まれないため、監視対象 pane がいる
-//     workspace ごとに worktree.list を同じ poll 内で追加取得する。1 回の応答は
-//     同じ repo を開いている全 workspace の branch を返すため、先行の応答で解決済みの
-//     workspace は引き直さない。この取得の失敗 (非 git の workspace を含む) は
-//     表示装飾の欠落 (ブランチ名なし) に留め、poll 全体を disconnected にしない
-//   - session.snapshot の失敗時は古い一覧を公開せずdisconnectedへ戻す。pollは止めず、
-//     次の成功でreadyへ戻る
-//   - stop() はpollと進行中taskをcancelする。同期I/Oがcancel後に返ってもstateへ反映しない
-//   - suspendPolling() / resumePolling() はシステムスリープ用の再開可能な一時停止。
-//     suspend はpollと進行中RPCをcancelし、その結果をstateへ反映しない。resume は
-//     直ちに1回取得してからpollを再開する
+// Synchronization contract:
+//   - events.subscribe is not used. Herdr events do not replay history, and
+//     pane.updated cannot be filtered per field, so we do not hold a high-frequency
+//     stream per connection that includes updates outside the watch set
+//   - start() fetches once immediately, then re-fetches at each source's
+//     pollInterval. Local uses 500ms; remote uses the saved setting (default 2s)
+//     passed in by FleetStore
+//   - When a poll tick overlaps an in-flight fetch, the in-flight one is awaited.
+//     No extra fetch is issued right after completion; the next tick catches up to
+//     the latest state, so RPCs do not pile up on a slow endpoint
+//   - snapshot returns agents and workspaces from the same server capture. It is
+//     published as ready from the first response after the protocol matches
+//   - Branch names alone are not included in session.snapshot, so worktree.list is
+//     additionally fetched within the same poll for each workspace that has watched
+//     panes. One response returns branches for every workspace opening the same
+//     repo, so workspaces already resolved by an earlier response are not
+//     re-fetched. Failure of this fetch (including non-git workspaces) only means a
+//     missing display decoration (no branch name) and does not make the whole poll
+//     disconnected
+//   - On session.snapshot failure, the stale list is not published; state returns
+//     to disconnected. Polling is not stopped, and the next success returns to ready
+//   - stop() cancels the poll and the in-flight task. If synchronous I/O returns
+//     after cancellation, it is not reflected into state
+//   - suspendPolling() / resumePolling() are a resumable pause for system sleep.
+//     suspend cancels the poll and in-flight RPCs and does not reflect their
+//     results into state. resume fetches once immediately, then restarts polling
 //
-// 既読管理は持たない。blocked/done は herdr 側の状態で、herdr で pane を閲覧すれば
-// done が idle に戻り、このアプリの表示も次のpollで消える。
+// No read/unread tracking is kept. blocked/done are herdr-side states; viewing the
+// pane in herdr turns done back to idle, and this app's display clears on the next
+// poll accordingly.
 
 import Foundation
 import Observation
@@ -31,16 +39,18 @@ import os
 
 private let log = Logger(subsystem: "io.github.cryks.shepherd", category: "store")
 
-/// UI が 1 回の書き換えで受け取る観測スナップショット。
-/// panes と workspaces は同じ session.snapshot から作り、片方だけを後から更新しない。
+/// Observed snapshot the UI receives in a single write.
+/// panes and workspaces are built from the same session.snapshot; neither side is
+/// updated separately later.
 struct AgentSnapshot: Equatable {
     var panes: [String: Pane]
     var workspaces: [String: Workspace]
 
-    /// server snapshot の配列を UI 用の ID 辞書へ変換する。subagent と agent 未検出の
-    /// pane はこの境界で除外し、以降の表示系には混ぜない。
-    /// branches (workspace ID → branch 名) は pane の branch へこの境界で書き込み、
-    /// 以降の表示系は Pane だけを見れば済むようにする。
+    /// Converts server snapshot arrays into ID-keyed dictionaries for the UI.
+    /// Subagent panes and panes with no detected agent are excluded at this
+    /// boundary and never mixed into anything downstream in the display layer.
+    /// branches (workspace ID → branch name) are written into each pane's branch
+    /// at this boundary, so the display layer only needs to look at Pane.
     init(agents: [Pane], workspaces: [Workspace], branches: [String: String] = [:]) {
         panes = Dictionary(
             uniqueKeysWithValues: agents
@@ -55,26 +65,28 @@ struct AgentSnapshot: Equatable {
     }
 }
 
-/// 接続と表示データの公開状態。ready だけがメニューバーと監視ウィンドウの
-/// データソースになり、RPC失敗後の古いsnapshotは表示へ残さない。
+/// Published state of the connection and display data. Only ready serves as the
+/// data source for the menu bar and monitor window; a stale snapshot after an RPC
+/// failure is never left on display.
 enum StoreState: Equatable {
     case disconnected
     case synchronizing
     case ready(AgentSnapshot)
-    /// サーバは応答したが protocol が Herdr.supportedProtocol と違う。
+    /// The server responded but its protocol differs from Herdr.supportedProtocol.
     case protocolMismatch(Int)
 }
 
-/// Store が読み込むRPC境界。テストは応答の完了と失敗を制御し、初回取得、poll、
-/// stopとの競合を実socketなしで再現する。
+/// RPC boundary the Store reads through. Tests control response completion and
+/// failure to reproduce the initial fetch, polling, and races with stop without a
+/// real socket.
 struct StoreDataSource: Sendable {
     var snapshot: @Sendable () async throws -> HerdrSessionSnapshot
-    /// workspace が属する repo の worktree 一覧。pane のブランチ名表示だけに使い、
-    /// 失敗しても poll の成否には関与しない。
+    /// Worktree list of the repo the workspace belongs to. Used only for showing
+    /// the pane's branch name; failure has no bearing on the poll's success.
     var worktrees: @Sendable (_ workspaceID: String) async throws -> WorktreeListResult
 
-    /// remote endpointではSSH tunnelのローカル側socketを固定で閉じ込め、pollの一部が
-    /// local herdrへ漏れないようにする。
+    /// For remote endpoints, this pins the local-side socket of the SSH tunnel so
+    /// no part of the poll leaks to the local herdr.
     static func live(socketPath: String) -> StoreDataSource {
         StoreDataSource(
             snapshot: {
@@ -101,11 +113,13 @@ final class Store {
     static let localPollInterval: Duration = .milliseconds(500)
 
     private(set) var state: StoreState
-    /// FleetStore がリモート設定変更をSSH再接続なしで反映する。0以下はbusy loopに
-    /// なるため受け付けず、RemotePollingIntervalのpresetだけをproductionから渡す。
+    /// FleetStore applies remote setting changes without an SSH reconnect. Values
+    /// of zero or less would busy-loop and are rejected; production only passes
+    /// the RemotePollingInterval presets.
     private(set) var pollInterval: Duration
 
-    /// ready 以外で空辞書を返し、切断前のsnapshotを表示側が再利用する経路を作らない。
+    /// Returns an empty dictionary outside ready, so no path exists for the display
+    /// layer to reuse a pre-disconnect snapshot.
     var panes: [String: Pane] {
         guard case .ready(let snapshot) = state else { return [:] }
         return snapshot.panes
@@ -121,8 +135,9 @@ final class Store {
     private var snapshotTask: Task<Void, Never>?
     private var hasStarted = false
     private var hasBeenStopped = false
-    /// システムスリープ中の一時停止。hasBeenStoppedと違いresumePolling()で解除できる。
-    /// remoteはtunnel ready待ちの間にsuspendされることがあるため、start()より先に立ちうる。
+    /// Pause during system sleep. Unlike hasBeenStopped, it can be lifted with
+    /// resumePolling(). A remote may be suspended while waiting for tunnel ready,
+    /// so this flag can be set before start().
     private var isPollingSuspended = false
 
     init(
@@ -136,8 +151,9 @@ final class Store {
         state = initialState
     }
 
-    /// 指定socketだけを読むlive endpointを作る。local/remoteの周期は所有者が明示し、
-    /// default引数でremoteを500msにしてしまう呼び出しを作らない。
+    /// Creates a live endpoint that reads only the given socket. The owner states
+    /// the local/remote interval explicitly, avoiding call sites where a default
+    /// argument would give a remote 500ms.
     static func live(socketPath: String, pollInterval: Duration) -> Store {
         Store(
             dataSource: .live(socketPath: socketPath),
@@ -145,14 +161,15 @@ final class Store {
         )
     }
 
-    // MARK: - 派生ビュー
+    // MARK: - Derived views
 
-    /// 監視ウィンドウ用の workspace ごとのグループ。workspace 番号順。
-    /// linked worktree の workspace は独立した見出しにせず、同じ repo の root checkout を
-    /// 開いている workspace のグループへ pane を合流させる (見出しは root 側の label)。
-    /// グループ内は workspace 番号 → pane 番号の順で、root の pane が worktree の pane より
-    /// 先に並ぶ。root checkout が workspace として開かれていない linked worktree と、
-    /// snapshot に見出しがない workspace は自分の見出しで出す。
+    /// Per-workspace groups for the monitor window, ordered by workspace number.
+    /// A linked-worktree workspace does not get its own heading; its panes merge
+    /// into the group of the workspace opening the same repo's root checkout (the
+    /// heading is the root side's label). Within a group, panes are ordered by
+    /// workspace number then pane number, so root panes come before worktree panes.
+    /// Linked worktrees whose root checkout is not open as a workspace, and
+    /// workspaces without a heading in the snapshot, appear under their own heading.
     var workspaceGroups: [(workspace: Workspace, panes: [Pane])] {
         var groups: [String: (workspace: Workspace, panes: [Pane])] = [:]
         for pane in panes.values {
@@ -169,8 +186,9 @@ final class Store {
             .sorted { $0.workspace.number < $1.workspace.number }
     }
 
-    /// pane が表示上属するグループの workspace。linked worktree の pane は
-    /// 同じ repoKey の root checkout を開いている workspace へ寄せる。
+    /// The workspace of the group a pane belongs to for display purposes. Panes of
+    /// linked worktrees are merged into the workspace opening the root checkout of
+    /// the same repoKey.
     private func groupWorkspace(for workspaceId: String) -> Workspace {
         guard let workspace = workspaces[workspaceId] else {
             return Workspace(workspaceId: workspaceId, label: workspaceId, number: Int.max)
@@ -181,8 +199,9 @@ final class Store {
         return rootWorkspacesByRepoKey[worktree.repoKey] ?? workspace
     }
 
-    /// repoKey → root checkout を開いている workspace。同じ repo root を複数の workspace
-    /// が開いている場合は番号が小さい方 (herdr 上で先に並ぶ方) を合流先にする。
+    /// repoKey → the workspace opening the root checkout. When multiple workspaces
+    /// open the same repo root, the lower-numbered one (the one listed earlier in
+    /// herdr) becomes the merge target.
     private var rootWorkspacesByRepoKey: [String: Workspace] {
         workspaces.values.reduce(into: [:]) { roots, workspace in
             guard let worktree = workspace.worktree, !worktree.isLinkedWorktree else { return }
@@ -193,25 +212,29 @@ final class Store {
         }
     }
 
-    // MARK: - ライフサイクル
+    // MARK: - Lifecycle
 
-    /// 初回snapshotとpollを開始する。複数回呼んでもtaskを増やさず、stop後は再開しない。
-    /// 設定OFF/ONではFleetStoreが新しいStoreを作り、古いRPCの完了を新しいruntimeへ渡さない。
+    /// Starts the initial snapshot and polling. Repeated calls do not multiply
+    /// tasks, and there is no restart after stop. On settings OFF/ON, FleetStore
+    /// creates a new Store so stale RPC completions never reach the new runtime.
     func start() {
         guard !hasStarted, !hasBeenStopped else { return }
         hasStarted = true
         if case .ready = state {
-            // start前に復元済みsnapshotを持つStoreは、初回poll完了までその表示を保つ。
+            // A Store holding a restored snapshot before start keeps showing it
+            // until the first poll completes.
         } else {
             state = .synchronizing
         }
-        // スリープ移行中にtunnel readyが届いたremoteは、取得を始めずresumePolling()を待つ。
+        // A remote whose tunnel becomes ready during the transition to sleep does
+        // not start fetching; it waits for resumePolling().
         guard !isPollingSuspended else { return }
         requestSnapshot()
         startPolling()
     }
 
-    /// endpointの削除・無効化時にpollと進行中RPCを止め、表示snapshotを破棄する。
+    /// Stops polling and in-flight RPCs when the endpoint is removed or disabled,
+    /// and discards the display snapshot.
     func stop() {
         guard hasStarted, !hasBeenStopped else { return }
         hasBeenStopped = true
@@ -222,21 +245,24 @@ final class Store {
         state = .disconnected
     }
 
-    /// システムスリープ直前にpollと進行中RPCを止める。stop()と違い表示snapshotと
-    /// 開始状態は保ち、resumePolling()で再開できる。cancelしたRPCがスリープ復帰後に
-    /// 返ってもloadSnapshotのTask.isCancelledガードがstateへ反映しない。
+    /// Stops polling and in-flight RPCs just before system sleep. Unlike stop(),
+    /// the display snapshot and started state are kept, and resumePolling() can
+    /// restart. If a cancelled RPC returns after wake, loadSnapshot's
+    /// Task.isCancelled guard keeps it out of state.
     func suspendPolling() {
         guard !isPollingSuspended else { return }
         isPollingSuspended = true
         pollingTask?.cancel()
         pollingTask = nil
-        // snapshotTaskはnilへ戻さない。requestSnapshotの重複ガードをcancel済みtaskの
-        // 完了 (loadSnapshotのdefer) まで効かせ、resume直後に同じRPCを二重発行しない。
+        // snapshotTask is not reset to nil. This keeps requestSnapshot's
+        // duplicate guard in effect until the cancelled task completes
+        // (loadSnapshot's defer), so the same RPC is not issued twice right
+        // after resume.
         snapshotTask?.cancel()
     }
 
-    /// スリープ復帰時に直ちに1回取得し、pollを再開する。start()前にsuspendされていた
-    /// Storeはここが初回取得になる。
+    /// Fetches once immediately on wake from sleep and restarts polling. For a
+    /// Store suspended before start(), this is the initial fetch.
     func resumePolling() {
         guard isPollingSuspended else { return }
         isPollingSuspended = false
@@ -245,13 +271,15 @@ final class Store {
         startPolling()
     }
 
-    /// リモート設定のpoll preset変更を既存Storeへ反映する。SSH tunnelとsocket pathは
-    /// 変わらないため接続を作り直さず、現在のsleepだけcancelして新しい周期を開始する。
+    /// Applies a remote-settings poll preset change to the existing Store. The SSH
+    /// tunnel and socket path do not change, so the connection is not rebuilt;
+    /// only the current sleep is cancelled and the new interval takes over.
     func setPollInterval(_ interval: Duration) {
         precondition(interval > .zero)
         guard pollInterval != interval else { return }
         pollInterval = interval
-        // suspend中は周期だけ更新し、resumePolling()が新しい周期でpollを開始する。
+        // While suspended, only the interval is updated; resumePolling() starts
+        // polling with the new interval.
         guard hasStarted, !hasBeenStopped, !isPollingSuspended else { return }
         pollingTask?.cancel()
         startPolling()
@@ -272,8 +300,9 @@ final class Store {
     }
 
     private func requestSnapshot() {
-        // sleepを終えて再開待ちだったpoll tickはcancelを観測せずここへ届くことがあるため、
-        // stopとsuspendはtask cancellationとは別にここでも弾く。
+        // A poll tick that finished its sleep and was awaiting resumption can
+        // arrive here without observing cancellation, so stop and suspend are
+        // also checked here, separately from task cancellation.
         guard hasStarted, !hasBeenStopped, !isPollingSuspended, snapshotTask == nil else { return }
         snapshotTask = Task { @MainActor [weak self] in
             await self?.loadSnapshot()
@@ -306,14 +335,15 @@ final class Store {
         }
     }
 
-    /// 監視対象 pane がいる workspace ごとに worktree.list を引き、workspace ID →
-    /// branch 名の対応を作る。1 回の応答は同じ repo を開いている全 workspace の branch を
-    /// open_workspace_id 付きで返すため、先行の応答で解決済みの workspace は引き直さない。
-    /// workspace の worktree metadata では絞らない (git repo でも session.snapshot に
-    /// metadata が付かない workspace があるため)。branch は表示装飾なので、失敗した
-    /// workspace (非 git を含む) は対応を作らないまま進み (その pane はブランチ名なしで
-    /// 出る)、poll の成否には関与しない。detached HEAD の checkout は branch を持たず
-    /// 記録しない。
+    /// Fetches worktree.list for each workspace that has watched panes and builds
+    /// the workspace ID → branch name mapping. One response returns branches with
+    /// open_workspace_id for every workspace opening the same repo, so workspaces
+    /// already resolved by an earlier response are not re-fetched. The workspace's
+    /// worktree metadata is not used to filter (some workspaces are git repos yet
+    /// carry no metadata in session.snapshot). Branch is display decoration, so a
+    /// failed workspace (including non-git ones) proceeds without a mapping (its
+    /// pane shows no branch name) and has no bearing on the poll's success.
+    /// Detached-HEAD checkouts have no branch and are not recorded.
     private func fetchBranches(
         for snapshot: HerdrSessionSnapshot
     ) async -> [String: String] {
@@ -341,8 +371,8 @@ final class Store {
         return branches
     }
 
-    /// Store.panes に保持する対象かを返す。agent_kind は完全一致で判定し、
-    /// metadata 未付与または未知の値を持つエージェントは一覧へ残す。
+    /// Whether the pane should be kept in Store.panes. agent_kind is matched
+    /// exactly; agents with missing metadata or an unknown value stay in the list.
     nonisolated static func shouldTrack(_ pane: Pane) -> Bool {
         pane.agent != nil && pane.tokens?.agentKind != "subagent"
     }
@@ -359,17 +389,19 @@ final class Store {
         state = .ready(snapshot)
     }
 
-    // MARK: - 並び順
+    // MARK: - Ordering
 
-    /// グループ内の pane の並びキー。合流したグループには複数 workspace の pane が
-    /// 混ざるため、workspace 番号を第一キーにして root → worktree の順を保ち、
-    /// 同じ workspace 内は pane 番号で herdr 内の表示順に近づける。
+    /// Sort key for panes within a group. A merged group mixes panes from multiple
+    /// workspaces, so the workspace number is the primary key to keep the
+    /// root → worktree order, and within the same workspace the pane number
+    /// approximates herdr's display order.
     private func paneSortKey(_ pane: Pane) -> (Int, Int) {
         (workspaces[pane.workspaceId]?.number ?? Int.max, paneNumber(pane))
     }
 
-    /// "w11:p2" → 2。pane ID の数値部で herdr 内の表示順に近づける。
-    /// ID の suffix には英字が混ざりうるので、読めないときは末尾送りにする。
+    /// "w11:p2" → 2. Uses the numeric part of the pane ID to approximate herdr's
+    /// display order. The ID suffix may contain letters, so unparsable IDs sort
+    /// to the end.
     private func paneNumber(_ pane: Pane) -> Int {
         guard let last = pane.paneId.split(separator: "p").last else { return Int.max }
         return Int(last) ?? Int.max

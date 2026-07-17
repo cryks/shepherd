@@ -1,19 +1,21 @@
-// メニューバーの状態アイコン 5 種を README の凡例用 PNG として出力する。
-// 使い方: swift Support/GenerateStatusIcons.swift <出力ディレクトリ>
+// Renders the five menu-bar status icons as PNGs for the README legend.
+// Usage: swift Support/GenerateStatusIcons.swift <output directory>
 //
-// 描画は Sources/Shepherd/ShepherdApp.swift の StatusIcons.circleImage の複製
-// (18pt キャンバス・外径 14pt・線幅 1.5・破線 [2.5, 2.0])。凡例を実物と同じ
-// 見た目に保つため、本体の寸法を変えたらここも揃えて make icon を実行する。
+// The drawing duplicates StatusIcons.circleImage in Sources/Shepherd/ShepherdApp.swift
+// (18pt canvas, 14pt outer diameter, 1.5 line width, dash pattern [2.5, 2.0]). To keep
+// the legend looking identical to the real thing, update this file whenever the app's
+// dimensions change and run make icon.
 //
-// 色の扱いだけ本体と 2 点違う:
-//   - systemRed などの動的色は aqua 外観で固定して解決する。CLI 実行には
-//     ウィンドウの外観コンテキストがなく、実行環境の設定で色が揺れるのを防ぐ。
-//   - 無彩色 2 状態 (idle / 未接続) は本体では template 画像としてメニューバーの
-//     明暗に追従するが、PNG は 1 枚なので GitHub の light / dark 両テーマで
-//     読める中間グレー (white: 0.5) に固定する。
+// Color handling differs from the app in exactly two ways:
+//   - Dynamic colors such as systemRed are resolved with the appearance pinned to aqua.
+//     A CLI run has no window appearance context, so this keeps colors from shifting
+//     with the settings of whatever environment runs the script.
+//   - The two achromatic states (idle / disconnected) are template images in the app and
+//     follow the menu bar's light/dark rendering, but a PNG is a single image, so they
+//     are fixed to a mid gray (white: 0.5) that stays readable on both GitHub themes.
 //
-// 出力は 18pt の 4 倍 (72px)。README 側で width="18" にして Retina でも
-// 縁が滲まないようにする。
+// Output is 4x the 18pt size (72px). The README uses width="18" so the edges
+// stay crisp on Retina displays.
 import AppKit
 
 struct StatusIcon {

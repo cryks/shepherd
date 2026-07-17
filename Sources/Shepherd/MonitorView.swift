@@ -1,17 +1,19 @@
-// ポップアウトウィンドウ。メニューバーパネルと同じ一覧 (SourceList) を通常の
-// ウィンドウへ切り離し、作業中も群れ全体を出しっぱなしにできるようにする。
-// 接続先ごと、その中で workspace ごとに親エージェントを一覧し、ローカル行は
-// herdr の該当 pane へ駆けつけ、リモート行は監視専用で操作を持たない。
-// このビューの表示/非表示が store.monitorWindowVisible の唯一の書き込み元。
+// The pop-out window. Detaches the same list as the menu bar panel (SourceList)
+// into a regular window so the whole herd can stay visible while working.
+// Lists parent agents per connection, and within that per workspace; local rows
+// jump to the corresponding herdr pane, remote rows are monitor-only with no
+// actions. This view's appear/disappear is the sole writer of
+// store.monitorWindowVisible.
 //
-// ウィンドウの外観はこのファイルが所有する: 標準の不透明なウィンドウ背景の
-// 上に、SourceList (window スタイル) がセクションごとの角丸カードを浮かべる。
-// タイトルバーは標準のまま使い、traffic lights との整列・ウィンドウのドラッグ・
-// スクロール時の titlebar 区切りは AppKit に任せる。タイトル文字列だけは、
-// 標準の window title 表示が持つ大きな leading インセット (macOS 26) を避ける
-// ため removing: .title で消し、traffic lights 直後の navigation 位置へ自前の
-// Text として置く (Window("Shepherd") のタイトルは Mission Control などの
-// ウィンドウ一覧表示に残る)。右上には状態別エージェント数のチップを足す。
+// This file owns the window's appearance: on top of the standard opaque window
+// background, SourceList (window style) floats a rounded-corner card per
+// section. The title bar stays standard, leaving traffic-light alignment,
+// window dragging, and the titlebar separator on scroll to AppKit. Only the
+// title string is removed with removing: .title, to avoid the large leading
+// inset the standard window title carries (macOS 26), and placed as our own
+// Text in the navigation slot right after the traffic lights (the
+// Window("Shepherd") title still appears in window overviews such as Mission
+// Control). The top right adds chips with per-status agent counts.
 
 import SwiftUI
 
@@ -26,9 +28,9 @@ struct MonitorView: View {
         }
         .toolbar(removing: .title)
         .toolbar {
-            // macOS 26 の toolbar は item を Liquid Glass の台座に載せるが、
-            // タイトルと押せない表示専用のチップに操作部品の見た目は
-            // 不釣り合いなので、両方とも sharedBackgroundVisibility で消す。
+            // The macOS 26 toolbar puts items on a Liquid Glass pedestal, but a
+            // control-like look is wrong for the title and the non-clickable,
+            // display-only chips, so both hide it via sharedBackgroundVisibility.
             if #available(macOS 26.0, *) {
                 ToolbarItem(placement: .navigation) {
                     titleLabel
@@ -57,11 +59,12 @@ struct MonitorView: View {
             .font(.headline)
     }
 
-    /// 状態別エージェント数のチップ列。件数 0 の状態は出さず、全状態が 0
-    /// (エージェントなし・未接続) では何も描かない。並びはメニューバー集約
-    /// (aggregateMenuBarState) と同じ重要度順: blocked → done → working。
-    /// trailing 6pt は、toolbar 右端の既定余白だけではチップの capsule が
-    /// ウィンドウ端に近すぎるための追い足し。
+    /// Row of chips with per-status agent counts. States with a count of 0 are
+    /// omitted; when every state is 0 (no agents, or not connected) nothing is
+    /// drawn. Ordered by the same severity as the menu bar aggregation
+    /// (aggregateMenuBarState): blocked → done → working.
+    /// The trailing 6pt is added because with only the toolbar's default
+    /// trailing margin the chip capsules sit too close to the window edge.
     private var statusSummary: some View {
         HStack(spacing: 6) {
             ForEach(statusCounts, id: \.status) { entry in
@@ -83,9 +86,10 @@ struct MonitorView: View {
         .padding(.trailing, 6)
     }
 
-    /// ウィンドウに表示中のセクション (sourceSections) と同じ範囲の集計。
-    /// 監視 OFF のリモートは一覧と同様にサマリへも入れない。
-    /// idle / unknown は「動きのある状態」ではないため数えない。
+    /// Tally over the same scope as the sections shown in the window
+    /// (sourceSections). Remotes with monitoring off are excluded from the
+    /// summary just as they are from the list.
+    /// idle / unknown are not counted, as they are not "active" states.
     private var statusCounts: [(status: AgentStatus, count: Int)] {
         let statuses = store.sourceSections
             .flatMap(\.workspaceGroups)

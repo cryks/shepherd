@@ -1,25 +1,27 @@
-// エントリポイント。LSUIElement (Dock 非表示) の常駐アプリとして、
-// ローカル + 複数リモートを束ねる FleetStore をメニューバー項目・監視ウィンドウ・
-// 設定の 3 シーンで共有する。
-// 監視ウィンドウはメニューから明示的に開くもので、起動時に自動で開かない・
-// 復元もしない (defaultLaunchBehavior / restorationBehavior で抑止)。
-// 設定シーンも MenuPanel の「設定…」からだけ開く。
+// Entry point. As an LSUIElement (hidden from the Dock) resident app, it shares
+// the FleetStore — which bundles local plus multiple remotes — across three
+// scenes: the menu bar item, the monitor window, and settings.
+// The monitor window is opened explicitly from the menu; it neither opens
+// automatically at launch nor gets restored (suppressed via
+// defaultLaunchBehavior / restorationBehavior).
+// The settings scene also opens only from MenuPanel's "Settings…" item.
 
 import AppKit
 import Observation
 import SwiftUI
 
-/// macOS の終了経路 (メニュー、logout、terminate) を FleetStore の stop へ、
-/// システムスリープ・復帰を poll の suspend / resume へ橋渡しする。終了時は
-/// managed SSH process と一時 Unix socket をアプリ終了前に片付ける。
+/// Bridges macOS termination paths (menu, logout, terminate) to FleetStore's
+/// stop, and system sleep/wake to poll suspend/resume. On termination, managed
+/// SSH processes and temporary Unix sockets are cleaned up before the app exits.
 @MainActor
 final class ShepherdApplicationDelegate: NSObject, NSApplicationDelegate {
     weak var store: FleetStore?
     weak var menuBarBlinkClock: MenuBarBlinkClock?
 
-    /// スリープ通知の観測 token。スリープ・復帰は NSWorkspace.shared.notificationCenter
-    /// だけが配送するため、NotificationCenter.default ではなくそちらへ登録する。
-    /// delegate はアプリと同寿命なので解除はしない。
+    /// Observation tokens for sleep notifications. Sleep/wake are delivered only
+    /// by NSWorkspace.shared.notificationCenter, so registration goes there rather
+    /// than NotificationCenter.default.
+    /// The delegate lives as long as the app, so the observers are never removed.
     private var sleepObservers: [NSObjectProtocol] = []
 
     func applicationDidFinishLaunching(_: Notification) {
@@ -30,7 +32,7 @@ final class ShepherdApplicationDelegate: NSObject, NSApplicationDelegate {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                // queue: .main 指定なので main thread 配送で、assumeIsolated が成立する。
+                // queue: .main means main-thread delivery, so assumeIsolated holds.
                 MainActor.assumeIsolated {
                     self?.store?.suspendPolling()
                 }
@@ -53,14 +55,15 @@ final class ShepherdApplicationDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// プロセスのエントリポイント。--render-screenshots (README 用スクリーンショットの
-/// ヘッドレス描画) だけ ScreenshotRenderer へ分岐し、それ以外は SwiftUI の
-/// App ライフサイクルを開始する。
+/// Process entry point. Only --render-screenshots (headless rendering of the
+/// README screenshots) branches to ScreenshotRenderer; everything else starts
+/// the SwiftUI App lifecycle.
 @main
 enum ShepherdMain {
     static func main() {
-        // static main は main thread で呼ばれるが MainActor 隔離の宣言を持たないため、
-        // assumeIsolated で ScreenshotRenderer (@MainActor) へ渡す。
+        // static main is called on the main thread but carries no MainActor
+        // isolation declaration, so assumeIsolated hands off to
+        // ScreenshotRenderer (@MainActor).
         let didRenderScreenshots = MainActor.assumeIsolated {
             ScreenshotRenderer.runIfRequested()
         }
@@ -78,7 +81,8 @@ struct ShepherdApp: App {
     init() {
         let store = FleetStore()
         let menuBarBlinkClock = MenuBarBlinkClock {
-            // 設定も tick ごとに読む。OFF へ切り替えた後は次の tick で表示フェーズへ戻る。
+            // The setting is also read each tick. After switching it OFF, the
+            // next tick returns to the visible phase.
             MenuBarIconPresentation.blinkEnabled()
                 && MenuBarIconPresentation.shouldBlink(store.menuBarState)
         }
@@ -98,9 +102,10 @@ struct ShepherdApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        // ポップアウトウィンドウ。MonitorView が containerBackground で全面
-        // material を敷き、toolbar item (状態サマリ) を足す。タイトルバーは
-        // 標準のままで、タイトルと traffic lights の整列は AppKit に任せる。
+        // Pop-out window. MonitorView lays a full-surface material via
+        // containerBackground and adds a toolbar item (status summary). The
+        // title bar stays standard; alignment of the title and traffic lights
+        // is left to AppKit.
         Window("Shepherd", id: monitorWindowId) {
             MonitorView(store: store)
         }
@@ -114,28 +119,32 @@ struct ShepherdApp: App {
     }
 }
 
-/// 監視ウィンドウのシーン ID。openWindow / dismissWindow で参照する。
+/// Scene ID of the monitor window. Referenced by openWindow / dismissWindow.
 let monitorWindowId = "monitor"
 
-/// `MenuBarExtra` のラベルより長く生存し、点滅フェーズを 0.8 秒ごとに進める。
-/// ラベルに付けた `task` は status item への変換後に継続実行されないため、App が
-/// このクロックを所有する。非点滅状態では `blinkVisible` を書き換えず、quiet / working
-/// の間にメニューバーを周期的に再描画しない。
+/// Outlives the `MenuBarExtra` label and advances the blink phase every 0.8
+/// seconds. A `task` attached to the label does not keep running after the
+/// conversion to a status item, so the App owns this clock. In non-blinking
+/// states, `blinkVisible` is not rewritten, so the menu bar is not periodically
+/// redrawn during quiet / working.
 @Observable @MainActor
 final class MenuBarBlinkClock {
-    /// true は表示フェーズ。点滅対象外、開始前、stop 後も true を保つ。
+    /// true is the visible phase. Stays true when not a blink target, before
+    /// start, and after stop.
     private(set) var blinkVisible = true
 
-    /// init で固定し、task の再開時にも同じ周期を使う。
+    /// Fixed at init; the same interval is used when the task restarts.
     @ObservationIgnored private let phaseDuration: Duration
-    /// 各 tick で最新の fleet 集約状態を読む。クロック自身は集約状態を保持しない。
+    /// Reads the latest fleet-aggregate state on each tick. The clock itself
+    /// holds no aggregate state.
     @ObservationIgnored private let shouldBlink: @MainActor () -> Bool
-    /// nil は開始前または stop 後。非 nil の間は 1 本だけ sleep loop を所有する。
+    /// nil before start or after stop. While non-nil, exactly one sleep loop is
+    /// owned.
     @ObservationIgnored private var task: Task<Void, Never>?
 
     /// - Parameters:
-    ///   - phaseDuration: 表示・非表示の各フェーズを維持する時間。
-    ///   - shouldBlink: tick 時点の集約状態が点滅対象かを返す。
+    ///   - phaseDuration: How long each visible/hidden phase is held.
+    ///   - shouldBlink: Whether the aggregate state at tick time is a blink target.
     init(
         phaseDuration: Duration = MenuBarIconPresentation.blinkPhaseDuration,
         shouldBlink: @escaping @MainActor () -> Bool
@@ -144,7 +153,7 @@ final class MenuBarBlinkClock {
         self.shouldBlink = shouldBlink
     }
 
-    /// 点滅 tick を開始する。重複呼び出しでは既存 task を維持する。
+    /// Starts the blink tick. Duplicate calls keep the existing task.
     func start() {
         guard task == nil else { return }
         let phaseDuration = phaseDuration
@@ -165,7 +174,8 @@ final class MenuBarBlinkClock {
         }
     }
 
-    /// tick を停止して表示フェーズへ戻す。アプリ終了時の task cancellation に使う。
+    /// Stops the tick and returns to the visible phase. Used for task
+    /// cancellation at app termination.
     func stop() {
         task?.cancel()
         task = nil
@@ -173,28 +183,31 @@ final class MenuBarBlinkClock {
     }
 }
 
-/// メニューバーに常駐するアイコン。ここが Shepherd の主表示で、
-/// エージェント群の状態を 1 つの丸で表す:
-///   - 点滅する赤●: blocked あり (入力待ち)
-///   - 点滅する緑●: done あり (未閲覧の完了)
-///   - 黄○: working あり            - 無色○: 全員 idle
-///   - 破線○: ready の監視先が 0 件 (未接続 / protocol 不一致を含む)
-/// 5 状態とも同一ジオメトリ (18pt キャンバス・外径 14pt) の自前描画で、
-/// 状態によって丸の大きさが変わって見えないようにする。SF Symbols は
-/// メニューバーでテンプレート描画になって色が剥がされるうえ、字形の
-/// 視覚サイズも自前描画と揃わないため使わない。無色の 2 状態だけ
-/// isTemplate = true にして、メニューバーの明暗に追従させる。
-/// 点滅は、非表示フェーズで全透明の blinkHidden へ NSImage ごと差し替えて表す。
-/// MenuBarExtra のラベルは NSStatusItem のボタンへ変換され、ビューの opacity の
-/// 変化がステータス項目の描画に反映されないため、状態色の切り替えで実際に
-/// 効いている「画像コンテンツの差し替え」と同じ経路に乗せる。
-/// 各状態の NSImage 自体は書き換えないため、メニュー内と監視ウィンドウの
-/// AgentRow は静止表示のまま。
+/// The icon resident in the menu bar. This is Shepherd's primary display,
+/// representing the agents' state as a single circle:
+///   - blinking red ●: has blocked (awaiting input)
+///   - blinking green ●: has done (unviewed completion)
+///   - yellow ○: has working            - colorless ○: everyone idle
+///   - dashed ○: zero ready watch targets (including disconnected / protocol mismatch)
+/// All 5 states are custom-drawn on the same geometry (18pt canvas, 14pt outer
+/// diameter) so the circle's size never appears to change with state. SF Symbols
+/// are not used: in the menu bar they become template-rendered and lose their
+/// color, and their glyphs' visual size does not match the custom drawing
+/// either. Only the two colorless states use isTemplate = true so they follow
+/// the menu bar's light/dark appearance.
+/// Blinking is expressed by swapping in the fully transparent blinkHidden NSImage
+/// during the hidden phase. The MenuBarExtra label is converted into an
+/// NSStatusItem button, and changes to the view's opacity are not reflected in
+/// the status item's rendering, so blinking rides the same path — swapping the
+/// image content — that already demonstrably works for switching the state color.
+/// The per-state NSImages themselves are never rewritten, so AgentRow in the
+/// menu and monitor window stays static.
 struct MenuBarIcon: View {
     var store: FleetStore
     var blinkClock: MenuBarBlinkClock
-    /// 点滅の有効設定。Settings の Toggle と同じキーを観測するので、OFF への
-    /// 切り替えは次の tick を待たず即座に丸の表示へ戻す。
+    /// Blink-enabled setting. Observes the same key as the Settings Toggle, so
+    /// switching it OFF returns to the circle display immediately without
+    /// waiting for the next tick.
     @AppStorage(MenuBarIconPresentation.blinkEnabledKey) private var blinkEnabled = true
 
     var body: some View {
@@ -207,7 +220,8 @@ struct MenuBarIcon: View {
             blinkEnabled: blinkEnabled,
             blinkVisible: blinkClock.blinkVisible
         ) {
-            // 全透明でもキャンバスが同一なので、ステータス項目の幅とクリック領域は残る。
+            // Even fully transparent, the canvas is identical, so the status
+            // item's width and click area remain.
             StatusIcons.blinkHidden
         } else {
             switch store.menuBarState {
@@ -226,18 +240,20 @@ struct MenuBarIcon: View {
     }
 }
 
-/// メニューバーのステータス項目だけが使う点滅規則。
-/// 1 フェーズ 0.8 秒で表示と非表示を入れ替える。
-/// 点滅そのものの有効・無効はユーザー設定 (blinkEnabledKey) で切り替えられる。
+/// Blink rules used only by the menu bar status item.
+/// Visible and hidden alternate at 0.8 seconds per phase.
+/// Whether blinking itself is enabled is a user setting (blinkEnabledKey).
 enum MenuBarIconPresentation {
     static let blinkPhaseDuration: Duration = .milliseconds(800)
 
-    /// 点滅設定の UserDefaults キー。SettingsView の Toggle が書き、
-    /// MenuBarIcon (@AppStorage) と ShepherdApp のクロック閉包 (blinkEnabled(in:)) が読む。
+    /// UserDefaults key for the blink setting. Written by SettingsView's Toggle
+    /// and read by MenuBarIcon (@AppStorage) and ShepherdApp's clock closure
+    /// (blinkEnabled(in:)).
     static let blinkEnabledKey = "MenuBarBlinkEnabled"
 
-    /// 保存済みの点滅設定。未保存 (キー欠落) は true (点滅する) に倒す。
-    /// @AppStorage を使えない非 View 文脈 (クロック閉包) 用の直読み。
+    /// The saved blink setting. Unsaved (missing key) defaults to true
+    /// (blinking). Direct read for non-View contexts (the clock closure) where
+    /// @AppStorage is unavailable.
     nonisolated static func blinkEnabled(in defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: blinkEnabledKey) as? Bool ?? true
     }
@@ -251,10 +267,11 @@ enum MenuBarIconPresentation {
         }
     }
 
-    /// 状態の丸を描くフェーズなら true、点滅の非表示フェーズ (全透明画像に
-    /// 差し替えるフェーズ) なら false。blinkEnabled が false のときと非点滅状態は
-    /// blinkVisible に関係なく表示し、点滅設定が有効な done / blocked だけを
-    /// タイマーが書き換えるフェーズに従わせる。
+    /// true if this is a phase that draws the state circle, false if it is the
+    /// blink's hidden phase (swapping in the fully transparent image). When
+    /// blinkEnabled is false, and in non-blinking states, the shape shows
+    /// regardless of blinkVisible; only done / blocked with blinking enabled
+    /// follow the phase the timer rewrites.
     static func showsStatusShape(
         for state: MenuBarState,
         blinkEnabled: Bool,
@@ -264,10 +281,10 @@ enum MenuBarIconPresentation {
     }
 }
 
-/// メニューバー本体とメニュー内のエージェント行が共用する丸アイコン。
-/// 全状態が同一ジオメトリなので、どこに並べても大きさが揃う。
-/// 画像自体は静止画で、メニューバーの点滅は MenuBarIcon が blinkHidden への
-/// 差し替えで行う。
+/// Circle icons shared by the menu bar itself and the agent rows inside the
+/// menu. All states share the same geometry, so sizes line up wherever they are
+/// placed. The images are static; menu bar blinking is done by MenuBarIcon
+/// swapping in blinkHidden.
 enum StatusIcons {
     static let disconnected = circleImage(filled: false, dashed: true, template: true)
     static let quiet = circleImage(filled: false, template: true)
@@ -275,11 +292,13 @@ enum StatusIcons {
     static let done = circleImage(color: .systemGreen, filled: true)
     static let blocked = circleImage(color: .systemRed, filled: true)
 
-    /// 点滅の非表示フェーズ専用の全透明画像。他の状態と同じ 18pt キャンバスなので、
-    /// 差し替えてもステータス項目の幅とクリック領域が変わらない。
+    /// Fully transparent image dedicated to the blink's hidden phase. Same 18pt
+    /// canvas as the other states, so swapping it in does not change the status
+    /// item's width or click area.
     static let blinkHidden = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in true }
 
-    /// エージェント個別のステータス表示。idle は無色 ○、unknown は破線 ○ に割り当てる。
+    /// Per-agent status display. idle maps to the colorless ○, unknown to the
+    /// dashed ○.
     static func icon(for status: AgentStatus) -> NSImage {
         switch status {
         case .working: working
@@ -290,10 +309,11 @@ enum StatusIcons {
         }
     }
 
-    /// 18pt キャンバス中央に外径 14pt の丸を描く。すべての状態でまず同じ
-    /// リング (線幅 1.5、線幅の半分だけ内側に寄せて外径を揃える) を描き、
-    /// filled のときはリングの内側に間隔 1.5pt を空けた塗り丸を重ねて
-    /// 二重丸 (SF Symbols の circle.inset.filled 相当) にする。
+    /// Draws a 14pt-outer-diameter circle centered on an 18pt canvas. Every
+    /// state first draws the same ring (line width 1.5, inset by half the line
+    /// width so the outer diameter matches); when filled, a filled dot with a
+    /// 1.5pt gap inside the ring is layered on top, forming a double circle
+    /// (equivalent to SF Symbols' circle.inset.filled).
     private static func circleImage(
         color: NSColor = .black,
         filled: Bool,
@@ -311,7 +331,8 @@ enum StatusIcons {
             ring.lineWidth = lineWidth
             ring.stroke()
             if filled {
-                // リング内縁 (外径 14 - 線幅 1.5×2 = 11) からさらに 1.5pt 空けた塗り丸。
+                // Filled dot 1.5pt inside the ring's inner edge (outer diameter
+                // 14 - line width 1.5×2 = 11).
                 let dot = NSBezierPath(ovalIn: rect.insetBy(dx: 5, dy: 5))
                 color.setFill()
                 dot.fill()

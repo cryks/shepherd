@@ -1,8 +1,10 @@
-// herdr サーバの Unix socket との一発 RPC 通信層。ワイヤは改行区切り JSON。
-// リクエスト 1 行につきレスポンス 1 行を読み、RPC ごとに接続を閉じる。socketPath は
-// ローカル herdr の既定 socket と、SSH が remote socket を転送した endpoint 固有 socket の
-// どちらも受け付ける。この層はバックグラウンドキューで同期 I/O を行い、上位へ async API
-// として返す。read/write は 10 秒、応答行は 4 MiB を上限とし、UI 状態やpoll周期は持たない。
+// One-shot RPC layer over the herdr server's Unix socket. The wire format is
+// newline-delimited JSON: one response line is read per request line, and the
+// connection is closed after each RPC. socketPath accepts both the local
+// herdr's default socket and the per-endpoint socket that SSH forwards from the
+// remote socket. This layer does synchronous I/O on a background queue and
+// exposes an async API upward. read/write are capped at 10 seconds and a
+// response line at 4 MiB; it holds no UI state or poll cadence.
 
 import Foundation
 
@@ -18,18 +20,20 @@ enum HerdrClientError: Error {
 }
 
 enum Herdr {
-    /// ローカル default session の接続先。remote session はこの path を上書きせず、
-    /// RemoteTunnelManager が source ごとの一時 socket を Store.live へ渡す。
+    /// Endpoint of the local default session. Remote sessions do not override
+    /// this path; RemoteTunnelManager passes a per-source temporary socket to
+    /// Store.live.
     static var defaultSocketPath: String {
         return NSHomeDirectory() + "/.config/herdr/herdr.sock"
     }
 
-    /// このアプリが実装対象にしているソケット API のバージョン。
-    /// session.snapshot の protocol がこれと異なる場合、上位はグレーアイコンにする。
+    /// The socket API version this app is written against. When
+    /// session.snapshot's protocol differs from this, upper layers show the
+    /// gray icon.
     static let supportedProtocol = 16
 
-    /// 一発 RPC。呼び出しごとに接続を張り、レスポンス 1 行を受けて閉じる。
-    /// サーバがエラー行を返した場合は RPCError を投げる。
+    /// One-shot RPC. Opens a connection per call, receives one response line,
+    /// then closes. Throws RPCError when the server returns an error line.
     static func request<R: Codable>(
         _ method: String,
         params: [String: Any] = [:],
@@ -86,14 +90,15 @@ func makeDecoder() -> JSONDecoder {
     return decoder
 }
 
-// MARK: - POSIX ソケットヘルパ
+// MARK: - POSIX socket helpers
 
 private func connectSocket(path: String, ioTimeout: TimeInterval) throws -> Int32 {
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else { throw HerdrClientError.socketFailed(errno) }
 
-    // remote tunnel の終了と RPC write が競合しても SIGPIPE でアプリ全体を終了させず、
-    // writeFailed として endpoint 単位の再接続へ戻す。
+    // Even if a remote tunnel teardown races with an RPC write, don't let
+    // SIGPIPE kill the whole app; surface it as writeFailed and return to the
+    // per-endpoint reconnect path.
     var noSigPipe: Int32 = 1
     guard setsockopt(
         fd,
@@ -110,7 +115,8 @@ private func connectSocket(path: String, ioTimeout: TimeInterval) throws -> Int3
     var addr = sockaddr_un()
     addr.sun_family = sa_family_t(AF_UNIX)
     let bytes = Array(path.utf8)
-    // sun_path は 104 バイト固定。ホームディレクトリ配下のパスなら収まるが、超えたら明示的に落とす。
+    // sun_path is fixed at 104 bytes. Paths under the home directory fit, but
+    // anything longer fails explicitly.
     guard bytes.count < MemoryLayout.size(ofValue: addr.sun_path) else {
         close(fd)
         throw HerdrClientError.pathTooLong
@@ -155,7 +161,7 @@ private func writeAll(_ fd: Int32, _ data: Data) throws {
     }
 }
 
-/// fd から改行区切りで 1 行ずつ読むリーダ。ブロッキング read 前提。
+/// Reader that yields newline-delimited lines from an fd. Assumes blocking reads.
 private final class LineReader {
     private let fd: Int32
     private let maximumLineBytes: Int
@@ -166,7 +172,7 @@ private final class LineReader {
         self.maximumLineBytes = maximumLineBytes
     }
 
-    /// 次の 1 行 (LF を除く) を返す。サーバが接続を閉じたら nil。
+    /// Returns the next line (LF excluded). nil when the server has closed the connection.
     func readLine() throws -> Data? {
         while true {
             if let index = buffer.firstIndex(of: 0x0A) {

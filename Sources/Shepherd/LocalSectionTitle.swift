@@ -1,19 +1,20 @@
-// ローカルセクション (この Mac) の見出し表示設定を所有する。保存するのは
-// UserDefaults の 2 キー (表示方法とカスタム表記) だけで、見出し文字列の解決
-// (custom の空白フォールバック、hidden の nil) もここに集約する。
-// 変えるのは見出し行の表示だけで、ローカルの監視 runtime・メニューバーの状態集約・
-// agent 行の表示には関与しない。
+// Owns the heading display setting for the local section (This Mac). Only two
+// UserDefaults keys are persisted (display style and custom label), and the
+// heading string resolution (blank fallback for custom, nil for hidden) is also
+// centralized here. Only the heading row's display changes: this has no bearing
+// on the local monitoring runtime, the menu bar state aggregation, or agent row
+// display.
 
 import Foundation
 import Observation
 
-/// ローカルセクション見出しの表示方法。設定 (一般タブ) の Picker で選ぶ。
+/// Display style for the local section heading. Chosen with a Picker in Settings (General tab).
 enum LocalSectionTitleStyle: String, CaseIterable, Identifiable, Sendable {
-    /// 既定名 (This Mac / この Mac) を見出しに使う。
+    /// Use the default name (This Mac / この Mac) as the heading.
     case standard
-    /// LocalSectionTitleSetting.customTitle を見出しに使う。
+    /// Use LocalSectionTitleSetting.customTitle as the heading.
     case custom
-    /// リモートセクションが並んでいても、ローカルの見出し行を描画しない。
+    /// Never draw the local heading row, even when remote sections are listed alongside.
     case hidden
 
     var id: String { rawValue }
@@ -27,32 +28,33 @@ enum LocalSectionTitleStyle: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// ローカルセクション見出し設定の唯一の書き込み元。@Observable なので、body 評価中に
-/// style や localHeaderTitle を読んだ view (SourceList、Settings) は設定変更で再描画される。
+/// The sole writer of the local-section heading setting. Being @Observable, any
+/// view that read style or localHeaderTitle during body evaluation (SourceList,
+/// Settings) is redrawn when the setting changes.
 @Observable @MainActor
 final class LocalSectionTitleSetting {
     static let shared = LocalSectionTitleSetting()
 
-    /// UserDefaults の保存キー。表示方法は rawValue、カスタム表記は文字列をそのまま保存する。
+    /// UserDefaults storage keys. The display style is stored as its rawValue, the custom label as the raw string.
     static let styleKey = "LocalSectionTitleStyle"
     static let customTitleKey = "LocalSectionCustomTitle"
 
-    /// 見出しの表示方法。書き込みと同時に UserDefaults へ保存する。
+    /// Heading display style. Persisted to UserDefaults on every write.
     var style: LocalSectionTitleStyle {
         didSet { defaults.set(style.rawValue, forKey: Self.styleKey) }
     }
 
-    /// custom スタイルで使う表記。style と独立して保存し、他のスタイルへ切り替えても
-    /// 入力済みの表記が消えない。
+    /// Label used by the custom style. Stored independently of style, so
+    /// switching to another style does not lose the entered label.
     var customTitle: String {
         didSet { defaults.set(customTitle, forKey: Self.customTitleKey) }
     }
 
     private let defaults: UserDefaults
 
-    /// - Parameter defaults: 保存先。アプリ本体は standard を使い、テストは専用 suite を渡す。
-    /// 未保存または未知の rawValue は standard として扱い、手編集された defaults や
-    /// 将来の保存形式変更で起動を壊さない。
+    /// - Parameter defaults: Storage destination. The app proper uses standard; tests pass a dedicated suite.
+    /// A missing or unknown rawValue is treated as standard, so hand-edited
+    /// defaults or a future change to the storage format cannot break launch.
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         style = defaults.string(forKey: Self.styleKey)
@@ -60,8 +62,9 @@ final class LocalSectionTitleSetting {
         customTitle = defaults.string(forKey: Self.customTitleKey) ?? ""
     }
 
-    /// ローカルセクションの見出し文字列。nil は見出し行を描画しない指示 (hidden)。
-    /// custom で空白だけの表記は既定名へ落とし、空の見出し行が残らないようにする。
+    /// Heading string for the local section. nil is the instruction to not draw
+    /// the heading row (hidden). A custom label that is whitespace-only falls
+    /// back to the default name so no empty heading row remains.
     var localHeaderTitle: String? {
         switch style {
         case .hidden:
@@ -74,6 +77,6 @@ final class LocalSectionTitleSetting {
         }
     }
 
-    /// 既定の見出し。custom の空白フォールバックと設定画面の placeholder が共有する。
+    /// Default heading. Shared by custom's blank fallback and the placeholder in the settings screen.
     static var defaultTitle: String { tr("This Mac", ja: "この Mac") }
 }

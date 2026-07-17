@@ -1,8 +1,9 @@
-// メニューバーだけに適用する点滅対象の契約を検証する。
-// 状態・点滅設定・フェーズからの表示フェーズ判定 (非表示フェーズは全透明画像への
-// 差し替え) に加え、App が所有するクロックが MenuBarExtra ラベルのライフサイクル外で
-// フェーズを進めることを短い周期で検証する。
-// 点滅設定の読み出しはテスト専用 suite の UserDefaults を使い、standard を汚さない。
+// Verifies the contract for what blinks in the menu bar (and only there).
+// Covers the visibility-phase decision derived from state, blink setting, and phase
+// (the hidden phase swaps in a fully transparent image), and additionally checks, on a
+// short cycle, that the app-owned clock advances the phase outside the lifecycle of the
+// MenuBarExtra label.
+// Reading the blink setting uses a test-only UserDefaults suite to avoid polluting standard.
 
 import XCTest
 @testable import Shepherd
@@ -46,7 +47,7 @@ final class MenuBarIconPresentationTests: XCTestCase {
         }
     }
 
-    /// 点滅設定 OFF では blocked / done も両フェーズで丸を表示し続ける契約。
+    /// Contract: with the blink setting off, blocked / done keep showing the circle in both phases.
     func testBlinkSettingOffKeepsStatusShapeInBothPhases() {
         for state in [MenuBarState.done, .blocked] {
             XCTAssertTrue(
@@ -62,7 +63,7 @@ final class MenuBarIconPresentationTests: XCTestCase {
         }
     }
 
-    /// 未保存のデフォルトが ON (点滅する) で、Toggle の書き込みを読み戻せる契約。
+    /// Contract: the unstored default is on (blinking), and values written by the Toggle read back.
     func testBlinkEnabledDefaultsToTrueAndReadsStoredValue() {
         let (defaults, suiteName) = makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -76,7 +77,7 @@ final class MenuBarIconPresentationTests: XCTestCase {
         XCTAssertTrue(MenuBarIconPresentation.blinkEnabled(in: defaults))
     }
 
-    /// 非表示フェーズの差し替え先がステータス項目の幅を変えない契約。
+    /// Contract: the image swapped in during the hidden phase does not change the status item's width.
     @MainActor
     func testBlinkHiddenSharesCanvasWithStatusShapes() {
         XCTAssertEqual(StatusIcons.blinkHidden.size, StatusIcons.blocked.size)

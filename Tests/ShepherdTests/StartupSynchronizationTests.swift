@@ -1,7 +1,8 @@
-// Storeのpoll-only同期を、実socketと本番周期に依存せず検証する。
-// session.snapshotの完了、失敗、protocol不一致、poll tick、stop、スリープ中の
-// suspend/resumeをテスト側で制御し、初回応答を1回で公開する契約と、
-// 遅いRPCを重複実行しない境界を扱う。
+// Verifies the Store's poll-only synchronization without depending on a real socket
+// or production intervals. The tests control session.snapshot completion, failure,
+// protocol mismatch, poll ticks, stop, and suspend/resume during sleep, covering the
+// contract that the first response is published exactly once and the boundary that a
+// slow RPC is never executed concurrently with another.
 
 import Foundation
 import XCTest
@@ -161,7 +162,7 @@ final class StartupSynchronizationTests: XCTestCase {
         await fulfillment(of: [snapshots.started(0)], timeout: 1.0)
         store.suspendPolling()
 
-        // suspendがcancelした進行中RPCの結果はstateへ反映されない。
+        // The result of an in-flight RPC cancelled by suspend is not reflected into state.
         snapshots.succeed(makeSnapshot(panes: [stale]), call: 0)
         await fulfillment(of: [snapshots.returned(0)], timeout: 1.0)
         await drainMainActor()
@@ -189,7 +190,7 @@ final class StartupSynchronizationTests: XCTestCase {
             snapshots.finish()
         }
 
-        // remoteのtunnel readyがスリープ移行中に届く経路: suspendが先、startが後。
+        // Path where a remote tunnel becomes ready while entering sleep: suspend first, start after.
         store.suspendPolling()
         store.start()
         try? await Task.sleep(for: .milliseconds(20))
@@ -296,7 +297,7 @@ final class StartupSynchronizationTests: XCTestCase {
         return snapshot
     }
 
-    /// XCTestExpectationはRPC開始点を固定し、この待機はMainActorへ戻ったstate変更だけを待つ。
+    /// XCTestExpectation pins the RPC start points; this wait only observes state changes that have returned to the MainActor.
     @MainActor
     private func waitUntil(
         timeout: Duration = .seconds(1),
@@ -311,7 +312,7 @@ final class StartupSynchronizationTests: XCTestCase {
         return condition()
     }
 
-    /// enqueue済みのMainActor taskへexecutorを譲り、固定時間sleepを停止競合へ持ち込まない。
+    /// Yields the executor to already-enqueued MainActor tasks so fixed-duration sleeps do not race against shutdown.
     @MainActor
     private func drainMainActor() async {
         for _ in 0..<20 {
@@ -320,8 +321,8 @@ final class StartupSynchronizationTests: XCTestCase {
     }
 }
 
-/// 1回のasync呼び出しをテストが明示的に解放するone-shot gate。
-/// 結果を呼び出し前に設定した場合も保持し、テスト終了時は未解放continuationを再開する。
+/// One-shot gate that the test releases explicitly for a single async call.
+/// Retains a result even when it is set before the call arrives, and resumes any unreleased continuation when the test finishes.
 private final class Deferred<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private var result: Result<UncheckedTransfer<Value>, Error>?
@@ -358,12 +359,12 @@ private final class Deferred<Value>: @unchecked Sendable {
     }
 }
 
-/// production型をテスト都合でretroactive Sendableにせず、gateをまたぐ所有権だけをuncheckedにする。
+/// Avoids making production types retroactively Sendable for test convenience; only the ownership transfer across the gate is unchecked.
 private struct UncheckedTransfer<Value>: @unchecked Sendable {
     let value: Value
 }
 
-/// 同じRPCの呼び出しごとに独立したgateとstarted/returned通知を割り当てる。
+/// Assigns each invocation of the same RPC its own gate and started/returned notifications.
 private final class ControlledCalls<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private let gates: [Deferred<Value>]

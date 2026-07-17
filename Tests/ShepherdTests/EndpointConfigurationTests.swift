@@ -1,6 +1,6 @@
-// 接続先 ID の source 修飾、リモート SSH 設定の正規化・validation、UserDefaults の
-// JSON 永続契約を検証する。SSH process や runtime socket は作らず、再起動をまたいで
-// 保持する設定値だけを対象にする。
+// Verifies source qualification of endpoint IDs, normalization/validation of remote SSH
+// settings, and the JSON persistence contract in UserDefaults. No SSH process or runtime
+// socket is created; only settings that persist across restarts are covered.
 
 import Foundation
 import XCTest
