@@ -20,8 +20,6 @@ jobs:
     # which needs the macos-26 image where Xcode 26 is the default.
     # The deployment target stays at .macOS(.v15) per Package.swift.
     runs-on: macos-26
-    # Covers the notarization wait loop (up to ~90 min) plus the build.
-    timeout-minutes: 120
     permissions:
       # needed by gh release create
       contents: write
@@ -56,73 +54,35 @@ jobs:
       # The identity name "Developer ID Application" is a partial match,
       # resolved against the keychain's actual entry
       # "Developer ID Application: <name> (<Team ID>)".
-      - name: Build, sign, and zip
+      - name: Build, sign, verify, and zip
         run: |
           make zip \
             ARCHS="arm64 x86_64" \
             SIGN_IDENTITY="Developer ID Application" \
             VERSION="${GITHUB_REF_NAME#v}"
+          codesign --verify --deep --strict --verbose=2 dist/Shepherd.app
 
-      # Notarization submits the zip, but the ticket can only be stapled
-      # to the .app inside, not to the zip itself, so the zip is rebuilt
-      # after stapling and becomes the release asset.
-      #
-      # notarytool --wait is not used: its polling exits 1 on a single
-      # HTTP error, so a transient network drop on the runner kills the
-      # whole job. Instead, submit and wait are separated, with a loop
-      # that swallows info errors and keeps waiting.
-      - name: Notarize and staple
+      # The notary ticket is stapled to the app rather than the submission zip,
+      # so rebuild the GitHub Release asset after stapling.
+      # If Apple returns no verdict within 30 minutes, fail without publishing.
+      - name: Notarize, staple, and validate
         env:
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
           NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
         run: |
           KEY_FILE="$RUNNER_TEMP/notary-key.p8"
-          echo "$NOTARY_KEY" > "$KEY_FILE"
-          NOTARY_ARGS=(--key "$KEY_FILE" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID")
-
-          # Upload. This too can fail on a transient drop, so try up to 3 times.
-          SUBMISSION_ID=""
-          for attempt in 1 2 3; do
-            SUBMISSION_ID=$(xcrun notarytool submit dist/Shepherd.zip \
-              "${NOTARY_ARGS[@]}" --output-format json | jq -r '.id' || true)
-            [ -n "$SUBMISSION_ID" ] && break
-            echo "submit failed (attempt $attempt), retrying in 30s"
-            sleep 30
-          done
-          if [ -z "$SUBMISSION_ID" ]; then
-            echo "could not submit for notarization" >&2
-            exit 1
-          fi
-          echo "submission id: $SUBMISSION_ID"
-
-          # Poll every 60s, up to 90 times (~90 min). The first submission
-          # from an account can sit in Apple's review for tens of minutes,
-          # hence the generous bound. An info failure (network error etc.)
-          # counts as Unknown and the wait continues.
-          STATUS="In Progress"
-          for i in $(seq 1 90); do
-            sleep 60
-            RAW=$(xcrun notarytool info "$SUBMISSION_ID" \
-              "${NOTARY_ARGS[@]}" --output-format json 2>/dev/null || true)
-            STATUS=$(echo "$RAW" | jq -r '.status // empty' 2>/dev/null || true)
-            STATUS=${STATUS:-Unknown}
-            echo "[$i/90] status: $STATUS"
-            case "$STATUS" in
-              "In Progress"|"Unknown") ;;
-              *) break ;;
-            esac
-          done
-
-          if [ "$STATUS" != "Accepted" ]; then
-            echo "notarization did not complete: $STATUS" >&2
-            # For Invalid, the rejection log is available (not while In Progress)
-            xcrun notarytool log "$SUBMISSION_ID" "${NOTARY_ARGS[@]}" || true
-            exit 1
-          fi
-
-          rm "$KEY_FILE"
+          trap 'rm -f "$KEY_FILE"' EXIT
+          install -m 600 /dev/null "$KEY_FILE"
+          printf '%s\n' "$NOTARY_KEY" > "$KEY_FILE"
+          xcrun notarytool submit dist/Shepherd.zip \
+            --key "$KEY_FILE" \
+            --key-id "$NOTARY_KEY_ID" \
+            --issuer "$NOTARY_ISSUER_ID" \
+            --wait \
+            --timeout 30m
           xcrun stapler staple dist/Shepherd.app
+          xcrun stapler validate dist/Shepherd.app
           ditto -c -k --keepParent dist/Shepherd.app \
             "dist/Shepherd-${GITHUB_REF_NAME#v}.zip"
 
