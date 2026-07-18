@@ -1,8 +1,11 @@
 // UI for the Settings scene. General settings and remote monitoring targets
-// are separated into tabs. Remote editing passes only values that passed
-// RemoteSourceConfiguration validation to FleetStore, and no SSH passwords or
-// private keys are stored. Authentication, ProxyJump, and key selection are
-// resolved by `/usr/bin/ssh` from `~/.ssh/config` and ssh-agent.
+// are separated into tabs. General owns only bindings to app-wide preferences;
+// notification authorization and cleanup stay in NotificationSettingsCoordinator
+// because toggling that preference has operating-system side effects. Remote
+// editing passes only values that passed RemoteSourceConfiguration validation to
+// FleetStore, and no SSH passwords or private keys are stored. Authentication,
+// ProxyJump, and key selection are resolved by `/usr/bin/ssh` from
+// `~/.ssh/config` and ssh-agent.
 
 import SwiftUI
 
@@ -13,10 +16,14 @@ let colorAgentIconsKey = "ColorAgentIcons"
 
 struct SettingsView: View {
     @Bindable var store: FleetStore
+    @Bindable var notificationSettings: NotificationSettingsCoordinator
 
     var body: some View {
         TabView {
-            GeneralSettingsView(store: store)
+            GeneralSettingsView(
+                store: store,
+                notificationSettings: notificationSettings
+            )
                 .tabItem {
                     Label(tr("General", ja: "一般"), systemImage: "gearshape")
                 }
@@ -27,11 +34,15 @@ struct SettingsView: View {
                 }
         }
         .frame(width: 520, height: 360)
+        .task {
+            await notificationSettings.refresh()
+        }
     }
 }
 
 private struct GeneralSettingsView: View {
     @Bindable var store: FleetStore
+    @Bindable var notificationSettings: NotificationSettingsCoordinator
     @Bindable private var language = LanguageSetting.shared
     @Bindable private var localTitle = LocalSectionTitleSetting.shared
     @AppStorage(colorAgentIconsKey) private var colorAgentIcons = false
@@ -51,6 +62,21 @@ private struct GeneralSettingsView: View {
                 ),
                 isOn: $blinkMenuBarIcon
             )
+            Toggle(
+                tr(
+                    "Send notifications when agents need attention",
+                    ja: "エージェントに対応が必要なときに通知"
+                ),
+                isOn: Binding(
+                    get: { notificationSettings.isEnabled },
+                    set: { enabled in
+                        Task { await notificationSettings.setEnabled(enabled) }
+                    }
+                )
+            )
+            if showsNotificationSystemWarning {
+                notificationSystemWarning
+            }
             Picker(tr("This Mac label", ja: "この Mac の表記"), selection: $localTitle.style) {
                 ForEach(LocalSectionTitleStyle.allCases) { style in
                     Text(style.displayName).tag(style)
@@ -77,6 +103,48 @@ private struct GeneralSettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// Shepherd keeps the app preference ON after denial. This row exposes the
+    /// separate macOS delivery gate without pretending the Toggle was reverted.
+    private var showsNotificationSystemWarning: Bool {
+        guard notificationSettings.isEnabled else { return false }
+        if notificationSettings.authorizationError != nil { return true }
+        let settings = notificationSettings.systemSettings
+        switch settings.authorizationStatus {
+        case .denied, .unknown:
+            return true
+        case .authorized, .provisional:
+            return settings.alertSetting != .enabled
+                || settings.notificationCenterSetting != .enabled
+                || settings.alertStyle == .none
+                || settings.alertStyle == .unknown
+        case .notDetermined:
+            return true
+        }
+    }
+
+    private var notificationSystemWarning: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label {
+                Text(tr(
+                    "macOS notification delivery is limited or disabled for Shepherd.",
+                    ja: "Shepherd の macOS 通知が制限または無効になっています。"
+                ))
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
+            .font(.caption)
+
+            Button(tr(
+                "Open Notification Settings…",
+                ja: "通知設定を開く…"
+            )) {
+                notificationSettings.openSystemNotificationSettings()
+            }
+            .controlSize(.small)
+        }
     }
 }
 

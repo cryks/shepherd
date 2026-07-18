@@ -9,20 +9,34 @@
 import AppKit
 import Observation
 import SwiftUI
+import UserNotifications
 
 /// Bridges macOS termination paths (menu, logout, terminate) to FleetStore's
-/// stop, and system sleep/wake to poll suspend/resume. On termination, managed
-/// SSH processes and temporary Unix sockets are cleaned up before the app exits.
+/// stop, system sleep/wake to poll suspend/resume, and UserNotifications delegate
+/// callbacks to app-owned attention routing. On termination, managed SSH
+/// processes, temporary Unix sockets, and live agent notifications are cleaned up
+/// before the app exits.
 @MainActor
-final class ShepherdApplicationDelegate: NSObject, NSApplicationDelegate {
+final class ShepherdApplicationDelegate: NSObject, NSApplicationDelegate,
+    UNUserNotificationCenterDelegate
+{
     weak var store: FleetStore?
     weak var menuBarBlinkClock: MenuBarBlinkClock?
+    var notificationActionHandler: (@MainActor (AttentionNotificationID) -> Void)?
+    var notificationTerminationHandler: (@MainActor () -> Void)?
+    var notificationAuthorizationRefreshHandler: (@MainActor () -> Void)?
 
     /// Observation tokens for sleep notifications. Sleep/wake are delivered only
     /// by NSWorkspace.shared.notificationCenter, so registration goes there rather
     /// than NotificationCenter.default.
     /// The delegate lives as long as the app, so the observers are never removed.
     private var sleepObservers: [NSObjectProtocol] = []
+
+    func applicationWillFinishLaunching(_: Notification) {
+        // The center retains its delegate weakly. This application delegate is
+        // retained by SwiftUI's adaptor for the process lifetime.
+        UNUserNotificationCenter.current().delegate = self
+    }
 
     func applicationDidFinishLaunching(_: Notification) {
         let center = NSWorkspace.shared.notificationCenter
@@ -49,9 +63,48 @@ final class ShepherdApplicationDelegate: NSObject, NSApplicationDelegate {
         ]
     }
 
+    func applicationDidBecomeActive(_: Notification) {
+        notificationAuthorizationRefreshHandler?()
+    }
+
     func applicationWillTerminate(_: Notification) {
+        notificationTerminationHandler?()
         menuBarBlinkClock?.stop()
         store?.stop()
+    }
+
+    /// Shepherd is an accessory app, so a notification can arrive while one of
+    /// its windows is active. Explicit foreground presentation preserves the
+    /// same banner/list behavior without adding sound.
+    nonisolated func userNotificationCenter(
+        _: UNUserNotificationCenter,
+        willPresent _: UNNotification,
+        withCompletionHandler completionHandler:
+            @escaping @Sendable (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list])
+    }
+
+    /// Routes only the system's default notification click. The response object
+    /// itself is not Sendable, so validation is completed before hopping to the
+    /// MainActor and only the opaque notification ID crosses that boundary.
+    nonisolated func userNotificationCenter(
+        _: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping @Sendable () -> Void
+    ) {
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+              let notificationID = AgentNotificationCenter.attentionNotificationID(
+                  from: response.notification.request
+              ) else {
+            completionHandler()
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            self?.notificationActionHandler?(notificationID)
+            completionHandler()
+        }
     }
 }
 
@@ -77,21 +130,65 @@ struct ShepherdApp: App {
     private var applicationDelegate
     @State private var store: FleetStore
     @State private var menuBarBlinkClock: MenuBarBlinkClock
+    @State private var monitorNavigation: MonitorWindowNavigation
+    @State private var notificationSettings: NotificationSettingsCoordinator
+    private let attentionMonitor: AttentionMonitor
 
     init() {
         let store = FleetStore()
+        let monitorNavigation = MonitorWindowNavigation()
+        let notificationCenter = AgentNotificationCenter()
+        let attentionMonitor = AttentionMonitor(store: store) { effects in
+            notificationCenter.apply(effects)
+        }
+        let notificationSettings = NotificationSettingsCoordinator(
+            notificationCenter: notificationCenter,
+            onEnabledChange: { [weak attentionMonitor] enabled in
+                attentionMonitor?.setEnabled(enabled)
+            }
+        )
         let menuBarBlinkClock = MenuBarBlinkClock {
             // The setting is also read each tick. After switching it OFF, the
             // next tick returns to the visible phase.
             MenuBarIconPresentation.blinkEnabled()
                 && MenuBarIconPresentation.shouldBlink(store.menuBarState)
         }
+        attentionMonitor.start(enabled: notificationSettings.isEnabled)
         store.start()
         menuBarBlinkClock.start()
+        self.attentionMonitor = attentionMonitor
         _store = State(initialValue: store)
         _menuBarBlinkClock = State(initialValue: menuBarBlinkClock)
+        _monitorNavigation = State(initialValue: monitorNavigation)
+        _notificationSettings = State(initialValue: notificationSettings)
         applicationDelegate.store = store
         applicationDelegate.menuBarBlinkClock = menuBarBlinkClock
+        applicationDelegate.notificationActionHandler = {
+            [weak attentionMonitor, weak store, weak monitorNavigation] notificationID in
+            guard let destination = attentionMonitor?.destination(for: notificationID) else {
+                monitorNavigation?.open()
+                return
+            }
+            if destination.isRemote {
+                monitorNavigation?.open(revealing: SourcePaneID(
+                    sourceID: destination.sourceID,
+                    paneID: destination.pane.paneId
+                ))
+            } else {
+                store?.focus(destination.pane, sourceID: destination.sourceID)
+            }
+        }
+        applicationDelegate.notificationTerminationHandler = {
+            [weak attentionMonitor, weak notificationCenter] in
+            attentionMonitor?.stop()
+            notificationCenter?.terminate()
+        }
+        applicationDelegate.notificationAuthorizationRefreshHandler = {
+            [weak notificationSettings] in
+            Task { @MainActor in
+                await notificationSettings?.refresh()
+            }
+        }
     }
 
     var body: some Scene {
@@ -99,6 +196,9 @@ struct ShepherdApp: App {
             MenuPanel(store: store)
         } label: {
             MenuBarIcon(store: store, blinkClock: menuBarBlinkClock)
+                .background {
+                    MonitorWindowOpenReceiver(navigation: monitorNavigation)
+                }
         }
         .menuBarExtraStyle(.window)
 
@@ -107,15 +207,46 @@ struct ShepherdApp: App {
         // title bar stays standard; alignment of the title and traffic lights
         // is left to AppKit.
         Window("Shepherd", id: monitorWindowId) {
-            MonitorView(store: store)
+            MonitorView(store: store, navigation: monitorNavigation)
         }
         .defaultSize(width: 380, height: 520)
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
 
         Settings {
-            SettingsView(store: store)
+            SettingsView(
+                store: store,
+                notificationSettings: notificationSettings
+            )
         }
+    }
+}
+
+/// Installs the SwiftUI OpenWindowAction at the always-mounted menu bar label.
+/// Notification responses can arrive while the Monitor scene does not exist, so
+/// MonitorWindowNavigation retains the request and this receiver opens the
+/// singleton scene once its environment is available. `openRevision` also makes
+/// repeated clicks bring an already-open window forward.
+private struct MonitorWindowOpenReceiver: View {
+    @Environment(\.openWindow) private var openWindow
+    let navigation: MonitorWindowNavigation
+    @State private var handledRevision: UInt64 = 0
+
+    var body: some View {
+        Color.clear
+            .onAppear { openIfNeeded() }
+            .onChange(of: navigation.openRevision) {
+                openIfNeeded()
+            }
+    }
+
+    private func openIfNeeded() {
+        let revision = navigation.openRevision
+        guard revision != 0, revision != handledRevision else { return }
+        handledRevision = revision
+        openWindow(id: monitorWindowId)
+        // LSUIElement apps are not activated when a SwiftUI window opens.
+        NSApp.activate()
     }
 }
 

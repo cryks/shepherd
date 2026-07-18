@@ -24,6 +24,12 @@ Shepherd connects to herdr, a terminal multiplexer for coding agents, and watche
 With multiple sources, the state that needs attention takes priority: blocked > done > working.
 "Done" clears once you view the pane in herdr.
 
+## Notifications
+
+Notifications are off by default. Enable them in General settings to receive one silent macOS notification for each agent that becomes blocked or done. Shepherd treats the first snapshot after launch, adding or turning a source back on, or re-enabling notifications as a baseline and starts notifying on later changes. A temporary disconnect keeps the prior state and reconciles it after reconnecting.
+
+The notification title matches the menu row: a red or green circle followed by the current task title. Source and workspace appear on the second line, with agent and branch in the body. Notifications are grouped by source and disappear when the agent no longer needs attention. Clicking a local notification focuses that pane in herdr; clicking a remote notification opens the pop-out window and reveals the agent.
+
 ## Jumping to an agent
 
 Click the menu bar icon to list your agents, grouped by source and workspace, with their current task titles. Click a local agent to focus its pane in herdr and bring your terminal to the front. Remote agents are monitor-only.
@@ -48,6 +54,8 @@ Connections use the standard macOS `ssh`, so `ProxyJump`, authentication methods
 
 - Launch at login
 - Show agent brand marks in color (monochrome by default)
+- Blink the menu bar icon when attention is needed
+- Send macOS notifications when agents need attention (off by default)
 - Rename or hide this Mac's section title
 - Language: System, English, or 日本語
 - Add and edit remote sources and their polling intervals

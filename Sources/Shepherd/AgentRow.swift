@@ -9,7 +9,9 @@
 // idiom of the surface the row is placed on. Rows from a local source are
 // Buttons carrying agent.focus; rows from a remote source are static,
 // monitor-only displays. Both share the same row layout, and non-interactive
-// rows are not dimmed with a disabled appearance.
+// rows are not dimmed with a disabled appearance. The monitor window can pass a
+// SourcePaneID selected by notification navigation; that row uses the same
+// rounded background language as list hover and clears on the caller's timer.
 
 import AppKit
 import SwiftUI
@@ -22,7 +24,22 @@ struct AgentGroupList: View {
     let sourceID: HerdrSourceID
     let groups: [(workspace: Workspace, panes: [Pane])]
     let hoverStyle: AgentRow.HoverStyle
+    let highlightedPaneID: SourcePaneID?
     let onFocus: ((Pane) -> Void)?
+
+    init(
+        sourceID: HerdrSourceID,
+        groups: [(workspace: Workspace, panes: [Pane])],
+        hoverStyle: AgentRow.HoverStyle,
+        highlightedPaneID: SourcePaneID? = nil,
+        onFocus: ((Pane) -> Void)?
+    ) {
+        self.sourceID = sourceID
+        self.groups = groups
+        self.hoverStyle = hoverStyle
+        self.highlightedPaneID = highlightedPaneID
+        self.onFocus = onFocus
+    }
 
     private var identifiedGroups: [IdentifiedWorkspaceGroup] {
         groups.map { group in
@@ -54,10 +71,14 @@ struct AgentGroupList: View {
                     AgentRow(
                         pane: identifiedPane.pane,
                         hoverStyle: hoverStyle,
+                        isRevealed: identifiedPane.id == highlightedPaneID,
                         onFocus: onFocus.map { action in
                             { action(identifiedPane.pane) }
                         }
                     )
+                    // ForEach identity drives diffing, while this explicit view
+                    // identity is the ScrollViewReader target used by MonitorView.
+                    .id(identifiedPane.id)
                 }
             }
         }
@@ -98,6 +119,9 @@ struct AgentRow: View {
 
     let pane: Pane
     let hoverStyle: HoverStyle
+    /// Programmatic, transient emphasis used after a notification opens Monitor.
+    /// It does not change clickability or establish persistent selection.
+    let isRevealed: Bool
     /// Jump-to action on row click. nil marks a remote, monitor-only row,
     /// which gets no Button and no hover feedback.
     let onFocus: (() -> Void)?
@@ -123,7 +147,7 @@ struct AgentRow: View {
         // hierarchical styles, so the menu inversion needs no per-element handling.
         .foregroundStyle(isMenuHighlighted ? Color(nsColor: .selectedMenuItemTextColor) : Color.primary)
         .background(
-            hoverBackground,
+            rowBackground,
             in: RoundedRectangle(cornerRadius: hoverCornerRadius, style: .continuous)
         )
         .onHover { isHovered = onFocus == nil ? false : $0 }
@@ -164,7 +188,8 @@ struct AgentRow: View {
     /// keeps text colors at their normal appearance.
     private var isMenuHighlighted: Bool { isHovered && hoverStyle == .menu }
 
-    private var hoverBackground: AnyShapeStyle {
+    private var rowBackground: AnyShapeStyle {
+        if isRevealed { return AnyShapeStyle(.quaternary) }
         guard isHovered else { return AnyShapeStyle(.clear) }
         switch hoverStyle {
         case .list: return AnyShapeStyle(.quaternary)

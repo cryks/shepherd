@@ -141,6 +141,12 @@ struct FleetSourceSection: Identifiable {
 @Observable @MainActor
 final class MonitoredSource: Identifiable {
     let id: HerdrSourceID
+    /// Identifies this runtime rather than its persisted endpoint. Reconnecting an
+    /// existing tunnel keeps the value, while disabling monitoring or changing
+    /// connection parameters creates a new runtime and therefore a new value.
+    /// Attention monitoring uses this boundary to baseline the replacement instead
+    /// of comparing agents from two different Herdr servers.
+    let attentionGenerationID = AttentionSourceGenerationID()
     private(set) var configuration: RemoteSourceConfiguration?
     let store: Store
 

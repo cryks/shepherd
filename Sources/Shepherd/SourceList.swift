@@ -12,7 +12,9 @@
 //   the checkbox conveys the state, so no body is drawn).
 // - window: settings-app style, floating each section body above the window
 //   background as a rounded card. No checkbox; monitoring OFF is shown as a
-//   single line inside the card.
+//   single line inside the card. A notification action can additionally pass a
+//   current SourcePaneID; only this presentation forwards it to AgentRow for a
+//   transient reveal highlight.
 
 import SwiftUI
 
@@ -32,17 +34,20 @@ struct SourceList: View {
 
     let sections: [FleetSourceSection]
     let style: Style
+    let highlightedPaneID: SourcePaneID?
     let onRemoteEnabledChange: ((HerdrSourceID, Bool) -> Void)?
     let onLocalFocus: (Pane) -> Void
 
     init(
         sections: [FleetSourceSection],
         style: Style,
+        highlightedPaneID: SourcePaneID? = nil,
         onRemoteEnabledChange: ((HerdrSourceID, Bool) -> Void)? = nil,
         onLocalFocus: @escaping (Pane) -> Void
     ) {
         self.sections = sections
         self.style = style
+        self.highlightedPaneID = highlightedPaneID
         self.onRemoteEnabledChange = onRemoteEnabledChange
         self.onLocalFocus = onLocalFocus
     }
@@ -102,6 +107,7 @@ struct SourceList: View {
                 WindowSourceSection(
                     section: section,
                     headerTitle: hasRemoteSections ? section.headerTitle : nil,
+                    highlightedPaneID: highlightedPaneID,
                     onLocalFocus: onLocalFocus
                 )
             }
@@ -205,6 +211,9 @@ private struct WindowSourceSection: View {
     /// Header row string. nil means no header (the local endpoint is the only
     /// one, or the local hidden setting), and only the card is drawn.
     let headerTitle: String?
+    /// Current cross-source row identity requested by notification navigation.
+    /// It may belong to another section; AgentGroupList compares the full ID.
+    let highlightedPaneID: SourcePaneID?
     let onLocalFocus: (Pane) -> Void
 
     var body: some View {
@@ -230,6 +239,7 @@ private struct WindowSourceSection: View {
                             sourceID: section.id,
                             groups: section.workspaceGroups,
                             hoverStyle: .list,
+                            highlightedPaneID: highlightedPaneID,
                             onFocus: section.isRemote ? nil : onLocalFocus
                         )
                     }
