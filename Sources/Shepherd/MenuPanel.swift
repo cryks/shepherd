@@ -60,7 +60,7 @@ struct MenuPanel: View {
                 listHeight = height
             }
         }
-        .frame(height: min(max(listHeight, 56), maxListHeight))
+        .frame(height: min(listHeight == 0 ? 56 : listHeight, maxListHeight))
         .background(PanelMaxHeightReader { height in
             panelMaxHeight = height
         })
@@ -69,7 +69,9 @@ struct MenuPanel: View {
     /// Measured list height. MenuBarExtra's window sizes the panel from the
     /// view's ideal size, but a ScrollView has no ideal height and collapses to
     /// 0, so the content's actual size is measured and given to the ScrollView
-    /// as its height (scrolling once the cap is exceeded).
+    /// as its height (scrolling once the cap is exceeded). The frame uses a
+    /// 56pt bootstrap height only until this becomes nonzero; keeping that
+    /// minimum after measurement leaves blank space below short empty states.
     @State private var listHeight: CGFloat = 0
 
     /// Maximum height the whole panel can take: the distance from the panel's
