@@ -12,6 +12,14 @@ Shepherd は herdr (コーディングエージェント向けターミナルマ
   <img src="Support/Screenshots/menu-panel-ja.png" width="400" alt="この Mac とリモートのエージェントが並ぶ Shepherd のメニューパネル">
 </p>
 
+## インストール
+
+```sh
+brew install cryks/tap/shepherd
+```
+
+または [Releases](https://github.com/cryks/shepherd/releases) の zip を展開して `Shepherd.app` を `/Applications` に移してください。
+
 ## メニューバーアイコン
 
 | 表示 | 意味 |
@@ -54,6 +62,7 @@ defaults write io.github.cryks.shepherd TerminalBundleID <バンドル ID>
 接続には macOS 標準の `ssh` を使うため、`ProxyJump` や認証方式など `~/.ssh/config` の設定がそのまま効きます。
 パスワードや秘密鍵は保存せず、接続時に入力を求めることもありません。
 リモート側に必要なのは動いている herdr だけで、Shepherd がインストールや再起動をすることはありません。
+ローカルで `herdr --remote` を起動しておく必要はありません。
 
 ## 設定
 
@@ -71,14 +80,6 @@ defaults write io.github.cryks.shepherd TerminalBundleID <バンドル ID>
 
 - macOS 15 以降
 - herdr (ローカルと監視対象の各リモート)
-
-## インストール
-
-```sh
-brew install cryks/tap/shepherd
-```
-
-または [Releases](https://github.com/cryks/shepherd/releases) の zip を展開して `Shepherd.app` を `/Applications` に移してください。
 
 ## ビルド
 

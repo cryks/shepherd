@@ -11,6 +11,14 @@ Shepherd connects to herdr, a terminal multiplexer for coding agents, and watche
   <img src="Support/Screenshots/menu-panel.png" width="400" alt="Shepherd menu panel listing agents on this Mac and a remote host">
 </p>
 
+## Install
+
+```sh
+brew install cryks/tap/shepherd
+```
+
+Or download the zip from [Releases](https://github.com/cryks/shepherd/releases) and move `Shepherd.app` into `/Applications`.
+
 ## The menu bar icon
 
 | Icon | Meaning |
@@ -43,7 +51,7 @@ To keep the list on screen, choose "Pop Out as Window" from the menu.
 
 Add SSH destinations in the Remote settings tab and agents on those hosts appear in the same list and icon. A destination is a Host from `~/.ssh/config` or `user@host`, plus an optional herdr session name. Each destination has its own polling interval.
 
-Connections use the standard macOS `ssh`, so `ProxyJump`, authentication methods, and host keys from your `~/.ssh/config` apply as usual. Shepherd stores no passwords or private keys and never prompts for input. All a remote host needs is a running herdr; Shepherd does not install or restart anything there.
+Connections use the standard macOS `ssh`, so `ProxyJump`, authentication methods, and host keys from your `~/.ssh/config` apply as usual. Shepherd stores no passwords or private keys and never prompts for input. All a remote host needs is a running herdr; Shepherd does not install or restart anything there. You do not need to run `herdr --remote` locally.
 
 ## Settings
 
@@ -61,14 +69,6 @@ Connections use the standard macOS `ssh`, so `ProxyJump`, authentication methods
 
 - macOS 15 or later
 - herdr running on this Mac and every remote you monitor
-
-## Install
-
-```sh
-brew install cryks/tap/shepherd
-```
-
-Or download the zip from [Releases](https://github.com/cryks/shepherd/releases) and move `Shepherd.app` into `/Applications`.
 
 ## Building
 
