@@ -77,7 +77,10 @@ private struct GeneralSettingsView: View {
             if showsNotificationSystemWarning {
                 notificationSystemWarning
             }
-            Picker(tr("This Mac label", ja: "この Mac の表記"), selection: $localTitle.style) {
+            Picker(
+                tr("This Mac label with remotes", ja: "リモート存在時のローカル表記"),
+                selection: $localTitle.style
+            ) {
                 ForEach(LocalSectionTitleStyle.allCases) { style in
                     Text(style.displayName).tag(style)
                 }
@@ -90,8 +93,8 @@ private struct GeneralSettingsView: View {
                 )
             } else if localTitle.style == .hidden {
                 Text(tr(
-                    "Agents on this Mac are listed without a section title.",
-                    ja: "この Mac のエージェントは見出しなしで一覧に並びます。"
+                    "With remotes, agents on this Mac are listed without a section title.",
+                    ja: "リモート存在時、この Mac のエージェントは見出しなしで並びます。"
                 ))
                 .font(.caption)
                 .foregroundStyle(.secondary)

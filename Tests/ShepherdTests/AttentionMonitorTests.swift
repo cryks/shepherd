@@ -357,6 +357,53 @@ final class AttentionMonitorTests: XCTestCase {
     }
 
     @MainActor
+    func testLocalSourceTitleIsUsedOnlyWhenRemoteSectionIsVisible() {
+        let originalStyle = LocalSectionTitleSetting.shared.style
+        let originalCustomTitle = LocalSectionTitleSetting.shared.customTitle
+        defer {
+            LocalSectionTitleSetting.shared.style = originalStyle
+            LocalSectionTitleSetting.shared.customTitle = originalCustomTitle
+        }
+        LocalSectionTitleSetting.shared.style = .custom
+        LocalSectionTitleSetting.shared.customTitle = "MacBook Pro"
+
+        let localOnly = FleetStore(
+            repository: RemoteSourceRepository(load: { [] }, save: { _ in }),
+            localStore: Store(initialState: .disconnected)
+        )
+        XCTAssertNil(AttentionFleetObservation(store: localOnly).sources[0].sourceTitle)
+
+        let visibleRemote = RemoteSourceConfiguration(
+            label: "Build Mac",
+            sshAlias: "build-mac",
+            isVisible: true,
+            isEnabled: false
+        )
+        let fleetWithRemote = FleetStore(
+            repository: RemoteSourceRepository(load: { [visibleRemote] }, save: { _ in }),
+            localStore: Store(initialState: .disconnected)
+        )
+        XCTAssertEqual(
+            AttentionFleetObservation(store: fleetWithRemote).sources[0].sourceTitle,
+            "MacBook Pro"
+        )
+
+        let hiddenRemote = RemoteSourceConfiguration(
+            label: "Hidden Mac",
+            sshAlias: "hidden-mac",
+            isVisible: false,
+            isEnabled: false
+        )
+        let fleetWithHiddenRemote = FleetStore(
+            repository: RemoteSourceRepository(load: { [hiddenRemote] }, save: { _ in }),
+            localStore: Store(initialState: .disconnected)
+        )
+        XCTAssertNil(
+            AttentionFleetObservation(store: fleetWithHiddenRemote).sources[0].sourceTitle
+        )
+    }
+
+    @MainActor
     func testCoordinatorObservesFleetStoreSnapshotTransitions() async {
         let initialPane = pane(status: .working)
         let initial = AgentSnapshot(

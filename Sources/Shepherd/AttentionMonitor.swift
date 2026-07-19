@@ -107,12 +107,22 @@ struct AttentionFleetObservation: Equatable {
 
     /// Captures the same filtered parent-agent population used by the menu and
     /// Monitor. Store.workspaceGroups supplies the visible workspace heading,
-    /// including linked-worktree grouping, for the notification subtitle.
+    /// including linked-worktree grouping, for the notification subtitle. The
+    /// local source label follows the menu's section rule: it is omitted when no
+    /// remote section is visible, then resolved from LocalSectionTitleSetting
+    /// when at least one visible remote makes source disambiguation useful.
     @MainActor
     init(store: FleetStore) {
+        let showsRemoteSections = store.remoteConfigurations.contains(where: \.isVisible)
         sources = store.activeSources.map { source in
-            let sourceTitle = source.configuration?.displayName
-                ?? LocalSectionTitleSetting.shared.localHeaderTitle
+            let sourceTitle: String?
+            if let configuration = source.configuration {
+                sourceTitle = configuration.displayName
+            } else if showsRemoteSections {
+                sourceTitle = LocalSectionTitleSetting.shared.localTitleWithRemotes
+            } else {
+                sourceTitle = nil
+            }
             let availability: AttentionSourceObservation.Availability
             if source.availableSnapshot == nil {
                 availability = .unavailable

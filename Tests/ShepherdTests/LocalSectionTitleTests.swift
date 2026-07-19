@@ -15,7 +15,7 @@ final class LocalSectionTitleTests: XCTestCase {
             let setting = LocalSectionTitleSetting(defaults: makeDefaults())
             XCTAssertEqual(setting.style, .standard)
             XCTAssertEqual(setting.customTitle, "")
-            XCTAssertEqual(setting.localHeaderTitle, "This Mac")
+            XCTAssertEqual(setting.localTitleWithRemotes, "This Mac")
         }
     }
 
@@ -26,10 +26,10 @@ final class LocalSectionTitleTests: XCTestCase {
             setting.style = .custom
 
             setting.customTitle = "  MacBook Pro  "
-            XCTAssertEqual(setting.localHeaderTitle, "MacBook Pro", "前後の空白が見出しに残る")
+            XCTAssertEqual(setting.localTitleWithRemotes, "MacBook Pro", "前後の空白が見出しに残る")
 
             setting.customTitle = "   "
-            XCTAssertEqual(setting.localHeaderTitle, "This Mac")
+            XCTAssertEqual(setting.localTitleWithRemotes, "This Mac")
         }
     }
 
@@ -38,7 +38,7 @@ final class LocalSectionTitleTests: XCTestCase {
         let setting = LocalSectionTitleSetting(defaults: makeDefaults())
         setting.style = .hidden
         setting.customTitle = "MacBook Pro"
-        XCTAssertNil(setting.localHeaderTitle)
+        XCTAssertNil(setting.localTitleWithRemotes)
     }
 
     @MainActor

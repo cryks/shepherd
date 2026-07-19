@@ -109,11 +109,11 @@ struct FleetSourceSection: Identifiable {
     }
 
     /// Section header. For a remote, the persistent configuration's display name.
-    /// For local, the string resolved by LocalSectionTitleSetting; nil when the
-    /// hidden setting is chosen (the view layer draws no header row).
+    /// For local, the label selected for presentation alongside remotes; nil when
+    /// the hidden setting is chosen (the view layer draws no header row).
     var headerTitle: String? {
         if let configuration { return configuration.displayName }
-        return LocalSectionTitleSetting.shared.localHeaderTitle
+        return LocalSectionTitleSetting.shared.localTitleWithRemotes
     }
 
     var state: MonitoredSourceState {
