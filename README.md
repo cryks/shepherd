@@ -21,14 +21,9 @@ Shepherd connects to herdr, a terminal multiplexer for coding agents, and watche
 | <img src="Support/StatusIcons/quiet.png" width="18" alt="Gray ring"> | All agents are idle |
 | <img src="Support/StatusIcons/disconnected.png" width="18" alt="Dashed gray ring"> | Not connected to herdr |
 
-With multiple sources, the state that needs attention takes priority: blocked > done > working.
-"Done" clears once you view the pane in herdr.
-
 ## Notifications
 
-Notifications are off by default. Enable them in General settings to receive one silent macOS notification for each agent that becomes blocked or done. Shepherd treats the first snapshot after launch, adding or turning a source back on, or re-enabling notifications as a baseline and starts notifying on later changes. A temporary disconnect keeps the prior state and reconciles it after reconnecting.
-
-The notification title matches the menu row: a red or green circle followed by the current task title. Source and workspace appear on the second line, with agent and branch in the body. Notifications are grouped by source and disappear when the agent no longer needs attention. Clicking a local notification focuses that pane in herdr; clicking a remote notification opens the pop-out window and reveals the agent.
+Notifications are off by default. Enable them in General settings to get a macOS notification when an agent becomes blocked or done. Clicking one takes you to that agent.
 
 ## Jumping to an agent
 
@@ -42,7 +37,7 @@ defaults write io.github.cryks.shepherd TerminalBundleID <bundle id>
 
 ## Pop-out window
 
-The dropdown closes when you click outside it. To keep the list on screen, choose "Pop Out as Window" from the menu; the same list detaches into a regular window.
+To keep the list on screen, choose "Pop Out as Window" from the menu.
 
 ## Monitoring remote hosts
 
@@ -65,7 +60,7 @@ Connections use the standard macOS `ssh`, so `ProxyJump`, authentication methods
 ## Requirements
 
 - macOS 15 or later
-- herdr speaking socket protocol 16, on this Mac and every remote you monitor
+- herdr running on this Mac and every remote you monitor
 
 ## Install
 

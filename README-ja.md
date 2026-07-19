@@ -22,20 +22,11 @@ Shepherd は herdr (コーディングエージェント向けターミナルマ
 | <img src="Support/StatusIcons/quiet.png" width="18" alt="無色の丸枠"> | すべて idle |
 | <img src="Support/StatusIcons/disconnected.png" width="18" alt="破線の丸枠"> | herdr に接続できていない |
 
-監視先が複数あるときは、対応が必要な状態を優先して表示します (blocked > done > working)。
-done の表示は、herdr でその pane を見ると idle に戻ります。
-
 ## 通知
 
 通知は既定で OFF です。
-一般設定で有効にすると、agent が blocked または done になったとき、agent ごとに無音の macOS 通知を送ります。
-起動、監視先の追加・再有効化、通知の再有効化後の最初の snapshot は基準状態として扱い、それ以降の変化から通知します。
-一時的な切断では直前の状態を保持し、再接続後の状態と比較します。
-
-通知の title はメニュー行と同じく、赤または緑の丸と現在の作業タイトルです。
-2段目に監視先と workspace、本文に agent と branch を表示します。
-通知は監視先ごとにまとまり、agent に対応が不要になると消えます。
-ローカルの通知をクリックすると herdr の pane に移動し、リモートの通知ではポップアウトウィンドウ内の agent を表示します。
+一般設定で有効にすると、agent が blocked または done になったときに macOS 通知を送ります。
+通知をクリックするとそのエージェントへ移動します。
 
 ## エージェントへの移動
 
@@ -52,8 +43,7 @@ defaults write io.github.cryks.shepherd TerminalBundleID <バンドル ID>
 
 ## ポップアウトウィンドウ
 
-ドロップダウンは外側をクリックすると閉じます。
-一覧を表示したままにしたいときは、メニューの「ウィンドウとしてポップアウト」で同じ一覧を通常のウィンドウに切り離せます。
+一覧を表示したままにしたいときは、メニューの「ウィンドウとしてポップアウト」を選びます。
 
 ## リモートの監視
 
@@ -80,7 +70,7 @@ defaults write io.github.cryks.shepherd TerminalBundleID <バンドル ID>
 ## 動作要件
 
 - macOS 15 以降
-- socket protocol 16 の herdr (ローカルと監視対象の各リモート)
+- herdr (ローカルと監視対象の各リモート)
 
 ## インストール
 
