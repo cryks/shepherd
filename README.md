@@ -58,6 +58,7 @@ Connections use the standard macOS `ssh`, so `ProxyJump`, authentication methods
 - Send macOS notifications when agents need attention (off by default)
 - Rename or hide this Mac's section title
 - Language: System, English, or 日本語
+- Check for updates automatically or manually
 - Add and edit remote sources and their polling intervals
 - Hide or pause individual remotes
 
@@ -65,6 +66,14 @@ Connections use the standard macOS `ssh`, so `ProxyJump`, authentication methods
 
 - macOS 15 or later
 - herdr speaking socket protocol 16, on this Mac and every remote you monitor
+
+## Install
+
+```sh
+brew install cryks/tap/shepherd
+```
+
+Or download the zip from [Releases](https://github.com/cryks/shepherd/releases) and move `Shepherd.app` into `/Applications`.
 
 ## Building
 

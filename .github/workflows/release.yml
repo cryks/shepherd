@@ -1,6 +1,6 @@
 # Creates a GitHub Release on every v* tag push.
-# Flow: tests, universal build + Developer ID signing, notarization,
-# staple, attach the zip.
+# Flow: tests, universal build + Developer ID signing, notarization, staple,
+# Sparkle appcast generation, attach zip + appcast, bump the Homebrew cask.
 #
 # Required secrets (repo Settings > Secrets and variables > Actions):
 # - MACOS_CERTIFICATE_P12:      base64 of the Developer ID Application cert (.p12)
@@ -8,6 +8,9 @@
 # - NOTARY_KEY_ID:              Key ID of the App Store Connect API key
 # - NOTARY_ISSUER_ID:           its Issuer ID
 # - NOTARY_KEY:                 the API key (.p8) contents, verbatim
+# - SPARKLE_ED_PRIVATE_KEY:     Sparkle EdDSA private key (generate_keys -x)
+# - TAP_PUSH_TOKEN:             (optional) fine-grained PAT, contents: write on
+#                               cryks/homebrew-tap; absent = cask bump skipped
 name: Release
 
 on:
@@ -86,11 +89,68 @@ jobs:
           ditto -c -k --keepParent dist/Shepherd.app \
             "dist/Shepherd-${GITHUB_REF_NAME#v}.zip"
 
+      # Sparkle appcast. generate_appcast signs the stapled zip with the EdDSA
+      # key and infers version / minimum system version from the Info.plist
+      # inside it. The app reads the feed at
+      # releases/latest/download/appcast.xml (SUFeedURL), so the appcast is
+      # attached to every release rather than hosted separately.
+      - name: Generate Sparkle appcast
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          SPARKLE_VERSION=2.9.4
+          SPARKLE_SHA256=ce89daf967db1e1893ed3ebd67575ed82d3902563e3191ca92aaec9164fbdef9
+          curl -fsSL -o "$RUNNER_TEMP/sparkle.tar.xz" \
+            "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
+          echo "$SPARKLE_SHA256  $RUNNER_TEMP/sparkle.tar.xz" | shasum -a 256 -c -
+          mkdir "$RUNNER_TEMP/sparkle"
+          tar -xJf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle"
+          mkdir "$RUNNER_TEMP/appcast"
+          cp "dist/Shepherd-${GITHUB_REF_NAME#v}.zip" "$RUNNER_TEMP/appcast/"
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | \
+            "$RUNNER_TEMP/sparkle/bin/generate_appcast" \
+              --ed-key-file - \
+              --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/" \
+              --link "https://github.com/${GITHUB_REPOSITORY}" \
+              "$RUNNER_TEMP/appcast"
+          mv "$RUNNER_TEMP/appcast/appcast.xml" dist/appcast.xml
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             "dist/Shepherd-${GITHUB_REF_NAME#v}.zip" \
+            dist/appcast.xml \
             --title "Shepherd ${GITHUB_REF_NAME#v}" \
             --generate-notes
+
+      # Keep the Homebrew cask (cryks/homebrew-tap) pointing at this release.
+      # Pushing to another repository needs a fine-grained PAT with
+      # contents: write on cryks/homebrew-tap; while the TAP_PUSH_TOKEN secret
+      # is absent this step logs and succeeds so the release itself is not
+      # blocked on tap credentials.
+      - name: Update Homebrew cask
+        env:
+          TAP_PUSH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
+        run: |
+          if [ -z "$TAP_PUSH_TOKEN" ]; then
+            echo "TAP_PUSH_TOKEN is not set; skipping cask update"
+            exit 0
+          fi
+          VERSION="${GITHUB_REF_NAME#v}"
+          SHA256=$(shasum -a 256 "dist/Shepherd-${VERSION}.zip" | awk '{print $1}')
+          git clone --depth 1 \
+            "https://x-access-token:${TAP_PUSH_TOKEN}@github.com/cryks/homebrew-tap.git" \
+            "$RUNNER_TEMP/homebrew-tap"
+          cd "$RUNNER_TEMP/homebrew-tap"
+          sed -i '' \
+            -e "s|^  version \".*\"$|  version \"${VERSION}\"|" \
+            -e "s|^  sha256 \".*\"$|  sha256 \"${SHA256}\"|" \
+            Casks/shepherd.rb
+          git diff --exit-code --quiet Casks/shepherd.rb && {
+            echo "cask already at ${VERSION}"; exit 0; }
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -am "shepherd ${VERSION}"
+          git push

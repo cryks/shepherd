@@ -27,5 +27,15 @@
 	<true/>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<!-- Sparkle update feed. releases/latest/download/<asset> is GitHub's
+	     stable redirect to the newest release's asset, so the URL survives
+	     version bumps; release.yml attaches appcast.xml to every release. -->
+	<key>SUFeedURL</key>
+	<string>https://github.com/cryks/shepherd/releases/latest/download/appcast.xml</string>
+	<!-- EdDSA public key verifying appcast entries. The private key lives in
+	     the SPARKLE_ED_PRIVATE_KEY Actions secret (and the maintainer's
+	     keychain); rotating it orphans every already-shipped app. -->
+	<key>SUPublicEDKey</key>
+	<string>a+rNdDtb0AOY7pgzut/LHlfuOqKjzC7yIoTyEVuCD4E=</string>
 </dict>
 </plist>

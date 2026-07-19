@@ -132,6 +132,7 @@ struct ShepherdApp: App {
     @State private var menuBarBlinkClock: MenuBarBlinkClock
     @State private var monitorNavigation: MonitorWindowNavigation
     @State private var notificationSettings: NotificationSettingsCoordinator
+    @State private var updater: UpdaterModel
     private let attentionMonitor: AttentionMonitor
 
     init() {
@@ -161,6 +162,7 @@ struct ShepherdApp: App {
         _menuBarBlinkClock = State(initialValue: menuBarBlinkClock)
         _monitorNavigation = State(initialValue: monitorNavigation)
         _notificationSettings = State(initialValue: notificationSettings)
+        _updater = State(initialValue: UpdaterModel())
         applicationDelegate.store = store
         applicationDelegate.menuBarBlinkClock = menuBarBlinkClock
         applicationDelegate.notificationActionHandler = {
@@ -216,7 +218,8 @@ struct ShepherdApp: App {
         Settings {
             SettingsView(
                 store: store,
-                notificationSettings: notificationSettings
+                notificationSettings: notificationSettings,
+                updater: updater
             )
         }
     }

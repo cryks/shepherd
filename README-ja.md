@@ -73,6 +73,7 @@ defaults write io.github.cryks.shepherd TerminalBundleID <バンドル ID>
 - agent に対応が必要なときに macOS 通知を送信 (既定は OFF)
 - この Mac のセクション見出しの変更・非表示
 - 言語 (システム / English / 日本語)
+- アップデートの確認 (自動 / 手動)
 - リモート監視先の追加・編集と更新間隔
 - リモートごとの非表示や監視の一時停止
 
@@ -80,6 +81,14 @@ defaults write io.github.cryks.shepherd TerminalBundleID <バンドル ID>
 
 - macOS 15 以降
 - socket protocol 16 の herdr (ローカルと監視対象の各リモート)
+
+## インストール
+
+```sh
+brew install cryks/tap/shepherd
+```
+
+または [Releases](https://github.com/cryks/shepherd/releases) の zip を展開して `Shepherd.app` を `/Applications` に移してください。
 
 ## ビルド
 

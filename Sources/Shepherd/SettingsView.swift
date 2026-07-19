@@ -17,12 +17,14 @@ let colorAgentIconsKey = "ColorAgentIcons"
 struct SettingsView: View {
     @Bindable var store: FleetStore
     @Bindable var notificationSettings: NotificationSettingsCoordinator
+    @Bindable var updater: UpdaterModel
 
     var body: some View {
         TabView {
             GeneralSettingsView(
                 store: store,
-                notificationSettings: notificationSettings
+                notificationSettings: notificationSettings,
+                updater: updater
             )
                 .tabItem {
                     Label(tr("General", ja: "一般"), systemImage: "gearshape")
@@ -35,6 +37,7 @@ struct SettingsView: View {
         }
         .frame(width: 520, height: 360)
         .task {
+            updater.refresh()
             await notificationSettings.refresh()
         }
     }
@@ -43,6 +46,7 @@ struct SettingsView: View {
 private struct GeneralSettingsView: View {
     @Bindable var store: FleetStore
     @Bindable var notificationSettings: NotificationSettingsCoordinator
+    @Bindable var updater: UpdaterModel
     @Bindable private var language = LanguageSetting.shared
     @Bindable private var localTitle = LocalSectionTitleSetting.shared
     @AppStorage(colorAgentIconsKey) private var colorAgentIcons = false
@@ -104,8 +108,33 @@ private struct GeneralSettingsView: View {
                     Text(verbatim: candidate.displayName).tag(candidate)
                 }
             }
+            Toggle(
+                tr("Automatically check for updates", ja: "アップデートを自動で確認"),
+                isOn: $updater.automaticallyChecksForUpdates
+            )
+            LabeledContent {
+                Button(tr("Check for Updates…", ja: "アップデートを確認…")) {
+                    updater.checkForUpdates()
+                }
+                .disabled(!updater.canCheckForUpdates)
+            } label: {
+                Text(tr("Updates", ja: "アップデート"))
+                Text(
+                    tr(
+                        "Version \(appVersion)",
+                        ja: "バージョン \(appVersion)"
+                    )
+                )
+            }
         }
         .formStyle(.grouped)
+    }
+
+    /// Version shown next to the update check. Running the bare build product
+    /// outside the .app (no Info.plist) yields the "-" placeholder.
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+            as? String ?? "-"
     }
 
     /// Shepherd keeps the app preference ON after denial. This row exposes the

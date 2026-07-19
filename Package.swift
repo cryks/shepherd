@@ -9,9 +9,17 @@ let package = Package(
         // at launch) requires macOS 15.
         .macOS(.v15)
     ],
+    dependencies: [
+        // Sparkle drives in-app updates. SwiftPM only links the framework;
+        // the Makefile embeds it into Contents/Frameworks of the .app.
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.4")
+    ],
     targets: [
         .executableTarget(
             name: "Shepherd",
+            dependencies: [
+                .product(name: "Sparkle", package: "Sparkle")
+            ],
             resources: [
                 // Brand-mark PDFs for each agent kind. AgentIcons reads them
                 // from the AgentMarks/ subdirectory of Bundle.module.
