@@ -189,7 +189,7 @@ private struct PanelScreenshot: View {
     let store: FleetStore
 
     var body: some View {
-        MenuPanel(store: store)
+        MenuPanel(store: store, updater: nil)
             .background(Color(nsColor: .windowBackgroundColor))
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay(

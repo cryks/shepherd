@@ -112,29 +112,8 @@ private struct GeneralSettingsView: View {
                 tr("Automatically check for updates", ja: "アップデートを自動で確認"),
                 isOn: $updater.automaticallyChecksForUpdates
             )
-            LabeledContent {
-                Button(tr("Check for Updates…", ja: "アップデートを確認…")) {
-                    updater.checkForUpdates()
-                }
-                .disabled(!updater.canCheckForUpdates)
-            } label: {
-                Text(tr("Updates", ja: "アップデート"))
-                Text(
-                    tr(
-                        "Version \(appVersion)",
-                        ja: "バージョン \(appVersion)"
-                    )
-                )
-            }
         }
         .formStyle(.grouped)
-    }
-
-    /// Version shown next to the update check. Running the bare build product
-    /// outside the .app (no Info.plist) yields the "-" placeholder.
-    private var appVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
-            as? String ?? "-"
     }
 
     /// Shepherd keeps the app preference ON after denial. This row exposes the

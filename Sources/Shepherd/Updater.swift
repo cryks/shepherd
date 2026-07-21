@@ -1,6 +1,8 @@
 // Sparkle integration. Owns the app's SPUStandardUpdaterController for the
-// process lifetime and re-publishes the two pieces of updater state the
-// settings pane reads. The feed URL and EdDSA public key live in
+// process lifetime and re-publishes the two pieces of updater state the UI
+// reads: canCheckForUpdates for MenuPanel's "Check for Updates…" item and the
+// automatic-check flag for the settings Toggle. The feed URL and EdDSA public
+// key live in
 // Support/Info.plist (SUFeedURL / SUPublicEDKey); the appcast itself is
 // generated and signed by .github/workflows/release.yml. Persistence of the
 // automatic-check preference belongs to Sparkle (SUEnableAutomaticChecks in
@@ -15,9 +17,10 @@ import Sparkle
 /// what the UI needs and forwards writes back to the updater.
 @Observable @MainActor
 final class UpdaterModel {
-    /// False while an update session is running. The "Check for Updates…"
-    /// button is disabled in that state; SPUUpdater ignores checkForUpdates
-    /// calls then, so the disabled state only makes the no-op visible.
+    /// False while an update session is running. MenuPanel's "Check for
+    /// Updates…" item is disabled in that state; SPUUpdater ignores
+    /// checkForUpdates calls then, so the disabled state only makes the no-op
+    /// visible.
     private(set) var canCheckForUpdates = false
 
     /// Mirror of SPUUpdater.automaticallyChecksForUpdates for the settings

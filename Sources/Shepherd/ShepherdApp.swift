@@ -3,8 +3,8 @@
 // scenes: the menu bar item, the monitor window, and settings.
 // The monitor window is opened explicitly from the menu; it neither opens
 // automatically at launch nor gets restored (suppressed via
-// defaultLaunchBehavior / restorationBehavior).
-// The settings scene also opens only from MenuPanel's "Settings…" item.
+// defaultLaunchBehavior / restorationBehavior). The About window behaves the
+// same way. Settings and About also open only from MenuPanel items.
 
 import AppKit
 import Observation
@@ -324,7 +324,7 @@ struct ShepherdApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuPanel(store: store)
+            MenuPanel(store: store, updater: updater)
         } label: {
             MenuBarIcon(store: store, blinkClock: menuBarBlinkClock)
                 .background {
@@ -341,6 +341,15 @@ struct ShepherdApp: App {
             MonitorView(store: store, navigation: monitorNavigation)
         }
         .defaultSize(width: 380, height: 520)
+        .defaultLaunchBehavior(.suppressed)
+        .restorationBehavior(.disabled)
+
+        // About window. windowResizability(.contentSize) fixes the window to
+        // AboutView's intrinsic size, so it opens as a non-resizable panel.
+        Window(tr("About Shepherd", ja: "Shepherd について"), id: aboutWindowId) {
+            AboutView()
+        }
+        .windowResizability(.contentSize)
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
 

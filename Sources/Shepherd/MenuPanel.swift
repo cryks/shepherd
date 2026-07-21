@@ -11,6 +11,10 @@ import SwiftUI
 
 struct MenuPanel: View {
     @Bindable var store: FleetStore
+    /// Sparkle bridge for the "Check for Updates…" item. nil only in headless
+    /// screenshot rendering (ScreenshotRenderer), which never starts Sparkle;
+    /// the item then draws enabled and its action does nothing.
+    let updater: UpdaterModel?
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.openSettings) private var openSettings
@@ -130,7 +134,23 @@ struct MenuPanel: View {
                 NSApp.activate()
                 dismiss()
             }
-            MenuItem(tr("Quit Shepherd", ja: "Shepherd を終了")) {
+            MenuItem(
+                tr("Check for Updates…", ja: "アップデートをチェック…"),
+                isEnabled: updater?.canCheckForUpdates ?? true
+            ) {
+                updater?.checkForUpdates()
+                // Sparkle presents its update window in this LSUIElement app, so activate explicitly.
+                NSApp.activate()
+                dismiss()
+            }
+            MenuSeparator()
+            MenuItem(tr("About Shepherd", ja: "Shepherd について")) {
+                openWindow(id: aboutWindowId)
+                // An LSUIElement app does not come to the front when it opens a window, so activate explicitly.
+                NSApp.activate()
+                dismiss()
+            }
+            MenuItem(tr("Quit", ja: "終了")) {
                 store.stop()
                 NSApp.terminate(nil)
             }
@@ -158,12 +178,14 @@ struct MenuPanel: View {
 /// whose tails rise gradually) the OS uses for the panel's corners.
 private struct MenuItem: View {
     let title: String
+    let isEnabled: Bool
     let action: () -> Void
 
     @State private var isHighlighted = false
 
-    init(_ title: String, action: @escaping () -> Void) {
+    init(_ title: String, isEnabled: Bool = true, action: @escaping () -> Void) {
         self.title = title
+        self.isEnabled = isEnabled
         self.action = action
     }
 
@@ -176,19 +198,29 @@ private struct MenuItem: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(!isEnabled)
         .foregroundStyle(
-            isHighlighted
-                ? Color(nsColor: .selectedMenuItemTextColor)
-                : Color.primary
+            !isEnabled
+                ? Color(nsColor: .disabledControlTextColor)
+                : showsHighlight
+                    ? Color(nsColor: .selectedMenuItemTextColor)
+                    : Color.primary
         )
         .background(
-            isHighlighted
+            showsHighlight
                 ? Color(nsColor: .selectedContentBackgroundColor)
                 : Color.clear,
             in: RoundedRectangle(cornerRadius: 9, style: .continuous)
         )
         .padding(.horizontal, 5)
         .onHover { isHighlighted = $0 }
+    }
+
+    /// Disabled items follow NSMenu: dimmed label, no hover highlight. onHover
+    /// keeps reporting while disabled, so the highlight is gated here instead of
+    /// at event delivery.
+    private var showsHighlight: Bool {
+        isHighlighted && isEnabled
     }
 }
 
