@@ -9,7 +9,7 @@ import XCTest
 @testable import Shepherd
 
 final class RemoteTunnelTests: XCTestCase {
-    func testLiveProbeSendsLineDelimitedPingAndAcceptsResponse() async throws {
+    func testLiveProbeSendsLineDelimitedPingAndAcceptsProtocolMismatch() async throws {
         let server = try TestHerdrPingServer()
         async let receivedRequest = server.serveOnePing()
 
@@ -534,9 +534,15 @@ private final class TestHerdrPingServer: @unchecked Sendable {
             guard request.count <= 4096 else { throw TunnelTestError.requestTooLarge }
         }
 
-        let response = Data(
-            (#"{"id":"shepherd:tunnel-probe","result":{"version":"test","protocol":16}}"# + "\n").utf8
-        )
+        let responseObject: [String: Any] = [
+            "id": "shepherd:tunnel-probe",
+            "result": [
+                "version": "test",
+                "protocol": Herdr.supportedProtocol - 1,
+            ],
+        ]
+        var response = try JSONSerialization.data(withJSONObject: responseObject)
+        response.append(0x0A)
         try response.withUnsafeBytes { bytes in
             guard let baseAddress = bytes.baseAddress else { return }
             var offset = 0

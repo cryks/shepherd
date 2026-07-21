@@ -147,7 +147,7 @@ final class SSHCommandBuilderTests: XCTestCase {
         defer { fixture.remove() }
         let shim = fixture.root.appendingPathComponent("mise/shims/herdr")
         let managedBinary = fixture.home.appendingPathComponent(
-            ".local/share/mise/installs/herdr/0.7.4/bin/herdr"
+            ".local/share/mise/installs/herdr/0.7.5/bin/herdr"
         )
         try writeFakeHerdr(at: shim, protocolVersion: Herdr.supportedProtocol)
         try writeFakeHerdr(at: managedBinary, protocolVersion: Herdr.supportedProtocol)
@@ -170,7 +170,10 @@ final class SSHCommandBuilderTests: XCTestCase {
         defer { fixture.remove() }
         let pathBinary = fixture.bin.appendingPathComponent("herdr")
         let managedBinary = fixture.home.appendingPathComponent(".local/bin/herdr")
-        try writeFakeHerdr(at: pathBinary, protocolVersion: 160)
+        try writeFakeHerdr(
+            at: pathBinary,
+            protocolVersion: Herdr.supportedProtocol * 10
+        )
         try writeFakeHerdr(at: managedBinary, protocolVersion: Herdr.supportedProtocol)
 
         let result = try await runResolver(fixture: fixture, sessionName: nil)

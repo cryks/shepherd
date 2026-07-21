@@ -1,4 +1,4 @@
-// Types only for the portion of the herdr socket API (protocol 16) JSON that
+// Types only for the portion of the herdr socket API (protocol 17) JSON that
 // this app reads. session.snapshot's agents elements are received as Pane and
 // its workspaces elements as Workspace; worktree.list's worktrees elements are
 // received as WorktreeEntry.
@@ -23,9 +23,9 @@ struct Pane: Codable, Identifiable, Equatable {
     var agentStatus: AgentStatus
     var paneId: String
     var workspaceId: String
-    /// Used as the agent.focus target for local rows. The pane ID changes when
-    /// the pane moves, but the terminal ID is stable. Remote rows are
-    /// monitor-only and never used for sending.
+    /// Stable identity across pane moves. AttentionMonitor uses it to correlate
+    /// observations and notification IDs; protocol 17 agent methods no longer
+    /// accept terminal IDs, so LocalAgentFocus targets the current paneId instead.
     var terminalId: String?
     /// Terminal title with decorations like spinners stripped. Used to show the
     /// agent's current work.

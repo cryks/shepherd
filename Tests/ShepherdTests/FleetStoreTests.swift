@@ -329,9 +329,10 @@ final class FleetStoreTests: XCTestCase {
         let terminalActivationGate = FleetFocusGate()
         let pane = makePane(status: .done, paneID: "w1:p1")
         let focus = LocalAgentFocus(
-            request: { receivedPane in
+            request: { receivedTarget in
                 events.append("request-start")
-                XCTAssertEqual(receivedPane.paneId, pane.paneId)
+                XCTAssertEqual(receivedTarget, pane.paneId)
+                XCTAssertEqual(pane.terminalId, "terminal-w1:p1")
                 requestStarted.fulfill()
                 await requestGate.wait()
                 events.append("request-finish")

@@ -407,8 +407,11 @@ struct LocalAgentFocus {
         self.focus = focus
     }
 
+    /// Builds the live activation sequence around an agent request. request
+    /// receives the pane ID from the latest snapshot because protocol 17 agent
+    /// methods reject terminal IDs.
     init(
-        request: @escaping @MainActor (_ pane: Pane) async throws -> Void,
+        request: @escaping @MainActor (_ target: String) async throws -> Void,
         applicationActivation:
             @escaping @MainActor () async -> ApplicationActivationResult,
         terminalActivation: @escaping @MainActor () -> TerminalApplicationActivation
@@ -416,7 +419,7 @@ struct LocalAgentFocus {
         focus = { pane in
             let activation = terminalActivation()
             do {
-                try await request(pane)
+                try await request(pane.paneId)
             } catch {
                 fleetLog.error("agent.focus failed: \(String(describing: error))")
             }
@@ -426,10 +429,10 @@ struct LocalAgentFocus {
     }
 
     static let live = LocalAgentFocus(
-        request: { pane in
+        request: { target in
             _ = try await Herdr.request(
                 "agent.focus",
-                params: ["target": pane.terminalId ?? pane.paneId],
+                params: ["target": target],
                 socketPath: Herdr.defaultSocketPath,
                 as: EmptyResult.self
             )

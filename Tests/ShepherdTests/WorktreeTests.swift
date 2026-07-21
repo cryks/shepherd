@@ -115,9 +115,8 @@ final class WorktreeTests: XCTestCase {
 
     @MainActor
     func testWorktreeMetadataの無いGitWorkspaceにもBranchを書き込む() async {
-        // session.snapshot may omit worktree metadata even for a git repo workspace
-        // (observed with protocol 16). Confirms that queries are not filtered by the
-        // presence of metadata.
+        // session.snapshot may omit worktree metadata even for a git repo workspace.
+        // Confirms that queries are not filtered by the presence of metadata.
         let serverSnapshot = makeSnapshot(
             agents: [makePane(id: "w4:p1", workspaceId: "w4")],
             workspaces: [Workspace(workspaceId: "w4", label: "signage", number: 4)]

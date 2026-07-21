@@ -429,14 +429,14 @@ enum SSHCommandBuilder {
         "\(localSocketPath):\(remoteSocketPath)"
     }
 
-    /// Read-only search across known managed installs, including the Herdr 0.7.4
-    /// remote candidate. Every path built from the `command -v` result or from
-    /// HOME/USER is executed as `"$candidate"`, so remote values are never
+    /// Read-only search across known managed installs, including canonical mise
+    /// and direct-download paths. Every path built from the `command -v` result
+    /// or from HOME/USER is executed as `"$candidate"`, so remote values are never
     /// reinterpreted as shell source. mise shims are excluded because a
     /// non-interactive shell may fail to resolve the tool version; the actual
     /// install is searched instead. The CLI is selected by a protocol Shepherd can
-    /// read, not by an exact version match. Server-side protocol judgment belongs to
-    /// the post-tunnel ping; this script performs no install or update.
+    /// read, not by an exact version match. Store judges the server protocol after
+    /// the tunnel is ready; this script performs no install or update.
     private static let remoteHerdrStatusScript = """
     set -u
     session=$1
@@ -450,7 +450,8 @@ enum SSHCommandBuilder {
         [ -n "$candidate" ] && [ -x "$candidate" ] || return 1
 
         client_status=$("$candidate" status client --json 2>/dev/null) || return 1
-        # Require a comma or object terminator right after the JSON number so 16 is not mistaken for 160.
+        # A delimiter after the JSON number rejects longer incompatible versions
+        # that share its prefix.
         case "$client_status" in
             *"$protocol_field,"*|*"$protocol_field}"*) ;;
             *) return 1 ;;
@@ -613,9 +614,9 @@ struct RemoteTunnelFileSystem: Sendable {
 
 // MARK: - Status discovery and ping
 
-/// Reads only the fields the tunnel needs from Herdr 0.7.4's `status server --json`.
-/// Version/protocol compatibility is judged by the upstream monitor from the
-/// forwarded ping.
+/// Reads only the fields the tunnel needs from Herdr's `status server --json`.
+/// Discovery only locates the socket. Store compares the snapshot protocol through
+/// the forwarded socket after the tunnel is ready.
 private struct RemoteHerdrServerStatus: Decodable {
     let running: Bool
     let socket: String?
