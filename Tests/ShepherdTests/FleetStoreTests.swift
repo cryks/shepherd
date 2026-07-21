@@ -297,7 +297,7 @@ final class FleetStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testRemote行からLocalFocusを呼べない() {
+    func testRemote行からLocalFocusを呼べない() async {
         var focusedPaneIDs: [String] = []
         let fleet = FleetStore(
             repository: RemoteSourceRepository(load: { [] }, save: { _ in }),
@@ -309,11 +309,139 @@ final class FleetStoreTests: XCTestCase {
         )
         let pane = makePane(status: .done, paneID: "w1:p1")
 
-        fleet.focus(pane, sourceID: .remote())
+        await fleet.focus(pane, sourceID: .remote())
         XCTAssertTrue(focusedPaneIDs.isEmpty)
 
-        fleet.focus(pane, sourceID: .local)
+        await fleet.focus(pane, sourceID: .local)
         XCTAssertEqual(focusedPaneIDs, [pane.paneId])
+    }
+
+    @MainActor
+    func testLocalFocusAwaitsRequestAppActivationAndTerminalHandoff() async {
+        var events: [String] = []
+        let requestStarted = expectation(description: "focus request started")
+        let appActivationStarted = expectation(description: "app activation started")
+        let terminalActivationStarted = expectation(
+            description: "terminal activation started"
+        )
+        let requestGate = FleetFocusGate()
+        let appActivationGate = FleetFocusGate()
+        let terminalActivationGate = FleetFocusGate()
+        let pane = makePane(status: .done, paneID: "w1:p1")
+        let focus = LocalAgentFocus(
+            request: { receivedPane in
+                events.append("request-start")
+                XCTAssertEqual(receivedPane.paneId, pane.paneId)
+                requestStarted.fulfill()
+                await requestGate.wait()
+                events.append("request-finish")
+            },
+            applicationActivation: {
+                events.append("app-activation-start")
+                appActivationStarted.fulfill()
+                await appActivationGate.wait()
+                events.append("app-activation-finish")
+                return .active
+            },
+            terminalActivation: {
+                TerminalApplicationActivation(
+                    activate: {
+                        events.append("terminal-activation-start")
+                        terminalActivationStarted.fulfill()
+                        await terminalActivationGate.wait()
+                        events.append("terminal-activation-finish")
+                    }
+                )
+            }
+        )
+        let operation = Task { @MainActor in
+            await focus.focus(pane)
+            events.append("return")
+        }
+
+        await fulfillment(of: [requestStarted], timeout: 1.0)
+        XCTAssertEqual(events, ["request-start"])
+
+        requestGate.open()
+        await fulfillment(of: [appActivationStarted], timeout: 1.0)
+        XCTAssertEqual(
+            events,
+            ["request-start", "request-finish", "app-activation-start"]
+        )
+
+        appActivationGate.open()
+        await fulfillment(of: [terminalActivationStarted], timeout: 1.0)
+        XCTAssertEqual(
+            events,
+            [
+                "request-start",
+                "request-finish",
+                "app-activation-start",
+                "app-activation-finish",
+                "terminal-activation-start",
+            ]
+        )
+
+        terminalActivationGate.open()
+        await operation.value
+
+        XCTAssertEqual(
+            events,
+            [
+                "request-start",
+                "request-finish",
+                "app-activation-start",
+                "app-activation-finish",
+                "terminal-activation-start",
+                "terminal-activation-finish",
+                "return",
+            ]
+        )
+    }
+
+    @MainActor
+    func testLocalFocusStillHandsOffWhenRequestFails() async {
+        var events: [String] = []
+        let pane = makePane(status: .done, paneID: "w1:p1")
+        let focus = LocalAgentFocus(
+            request: { _ in
+                throw FleetTestError.unexpectedCall
+            },
+            applicationActivation: {
+                events.append("app-activation")
+                return .active
+            },
+            terminalActivation: {
+                TerminalApplicationActivation(
+                    activate: {
+                        events.append("terminal-activation")
+                    }
+                )
+            }
+        )
+
+        await focus.focus(pane)
+
+        XCTAssertEqual(events, ["app-activation", "terminal-activation"])
+    }
+
+    @MainActor
+    func testLocalFocusSkipsTerminalHandoffDuringShutdown() async {
+        var terminalActivationCount = 0
+        let pane = makePane(status: .done, paneID: "w1:p1")
+        let focus = LocalAgentFocus(
+            request: { _ in },
+            applicationActivation: { .shutDown },
+            terminalActivation: {
+                TerminalApplicationActivation(
+                    activate: { terminalActivationCount += 1 }
+                )
+            }
+        )
+
+        await focus.focus(pane)
+
+        XCTAssertEqual(terminalActivationCount, 0)
     }
 
     @MainActor
@@ -629,6 +757,30 @@ final class FleetStoreTests: XCTestCase {
 private enum FleetTestError: Error, Equatable {
     case unexpectedCall
     case saveFailed
+}
+
+/// One-shot MainActor gate used to prove that each focus phase keeps its caller
+/// suspended until the next phase is allowed to start.
+@MainActor
+private final class FleetFocusGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var isOpen = false
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            precondition(self.continuation == nil)
+            self.continuation = continuation
+        }
+    }
+
+    func open() {
+        guard !isOpen else { return }
+        isOpen = true
+        let continuation = self.continuation
+        self.continuation = nil
+        continuation?.resume()
+    }
 }
 
 /// A lock-guarded counter for counting RPC calls from the dataSource's @Sendable closures.

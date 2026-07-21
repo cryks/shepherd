@@ -8,8 +8,131 @@
 
 import AppKit
 import Observation
+import OSLog
 import SwiftUI
 import UserNotifications
+
+private let applicationLog = Logger(
+    subsystem: "io.github.cryks.shepherd",
+    category: "application"
+)
+
+/// Tells the focus pipeline whether a terminal handoff may continue after the
+/// source-application activation phase.
+enum ApplicationActivationResult: Equatable {
+    /// Shepherd is active and can yield activation through NSWorkspace.
+    case active
+    /// AppKit did not activate Shepherd within the bound; continue best effort.
+    case timedOut
+    /// Application teardown started; no new external application may be opened.
+    case shutDown
+
+    var allowsTerminalHandoff: Bool {
+        self != .shutDown
+    }
+}
+
+/// Serializes requests to make this accessory app active before it hands
+/// activation to another process. NSApplication activation is asynchronous and
+/// can be denied, so callers wait for the delegate's did-become-active callback
+/// or a bounded timeout. Concurrent notification clicks share one request.
+@MainActor
+final class ApplicationActivationCoordinator {
+    /// NSApplication is process-wide, and ShepherdApplicationDelegate forwards
+    /// its matching lifecycle callbacks to this process-wide coordinator.
+    static let shared = ApplicationActivationCoordinator()
+
+    private let activationTimeout: Duration
+    private let isActive: @MainActor () -> Bool
+    private let requestActivation: @MainActor () -> Void
+    private let onTimeout: @MainActor () -> Void
+
+    /// Continuations registered after an inactive check and drained by an
+    /// activation callback, timeout, or application shutdown.
+    private var waiters: [CheckedContinuation<ApplicationActivationResult, Never>] = []
+    /// Exists while at least one waiter owns the current activation request.
+    private var timeoutTask: Task<Void, Never>?
+    /// Set during termination so no new activation request outlives teardown.
+    private var isShutDown = false
+
+    init(
+        activationTimeout: Duration = .seconds(1),
+        isActive: @escaping @MainActor () -> Bool = { NSApp.isActive },
+        requestActivation: @escaping @MainActor () -> Void = { NSApp.activate() },
+        onTimeout: @escaping @MainActor () -> Void = {
+            applicationLog.error("Shepherd activation timed out before terminal handoff")
+        }
+    ) {
+        self.activationTimeout = activationTimeout
+        self.isActive = isActive
+        self.requestActivation = requestActivation
+        self.onTimeout = onTimeout
+    }
+
+    /// Returns after Shepherd becomes active, the bounded wait expires, or app
+    /// teardown starts. A timeout permits a best-effort terminal request;
+    /// shutdown forbids it.
+    func activate() async -> ApplicationActivationResult {
+        guard !isShutDown else { return .shutDown }
+        guard !isActive() else { return .active }
+
+        return await withCheckedContinuation { continuation in
+            // Activation can arrive between the outer check and registration.
+            guard !isShutDown else {
+                continuation.resume(returning: .shutDown)
+                return
+            }
+            guard !isActive() else {
+                continuation.resume(returning: .active)
+                return
+            }
+
+            waiters.append(continuation)
+            guard waiters.count == 1 else { return }
+
+            timeoutTask = Task { @MainActor in
+                do {
+                    try await Task.sleep(for: activationTimeout)
+                } catch {
+                    return
+                }
+                if !isActive() {
+                    onTimeout()
+                    finish(with: .timedOut)
+                } else {
+                    finish(with: .active)
+                }
+            }
+
+            // Register the continuation before requesting activation so a
+            // synchronous callback cannot leave the caller suspended.
+            requestActivation()
+            if isActive() {
+                finish(with: .active)
+            }
+        }
+    }
+
+    /// Resumes every request coalesced behind the current AppKit activation.
+    func didBecomeActive() {
+        finish(with: .active)
+    }
+
+    /// Prevents termination from leaving checked continuations suspended.
+    func shutdown() {
+        isShutDown = true
+        finish(with: .shutDown)
+    }
+
+    private func finish(with result: ApplicationActivationResult) {
+        let waiters = self.waiters
+        self.waiters.removeAll()
+        let timeoutTask = self.timeoutTask
+        self.timeoutTask = nil
+        timeoutTask?.cancel()
+        waiters.forEach { $0.resume(returning: result) }
+    }
+}
 
 /// Bridges macOS termination paths (menu, logout, terminate) to FleetStore's
 /// stop, system sleep/wake to poll suspend/resume, and UserNotifications delegate
@@ -22,7 +145,8 @@ final class ShepherdApplicationDelegate: NSObject, NSApplicationDelegate,
 {
     weak var store: FleetStore?
     weak var menuBarBlinkClock: MenuBarBlinkClock?
-    var notificationActionHandler: (@MainActor (AttentionNotificationID) -> Void)?
+    var notificationActionHandler:
+        (@MainActor (AttentionNotificationID) async -> Void)?
     var notificationTerminationHandler: (@MainActor () -> Void)?
     var notificationAuthorizationRefreshHandler: (@MainActor () -> Void)?
 
@@ -64,10 +188,12 @@ final class ShepherdApplicationDelegate: NSObject, NSApplicationDelegate,
     }
 
     func applicationDidBecomeActive(_: Notification) {
+        ApplicationActivationCoordinator.shared.didBecomeActive()
         notificationAuthorizationRefreshHandler?()
     }
 
     func applicationWillTerminate(_: Notification) {
+        ApplicationActivationCoordinator.shared.shutdown()
         notificationTerminationHandler?()
         menuBarBlinkClock?.stop()
         store?.stop()
@@ -85,26 +211,29 @@ final class ShepherdApplicationDelegate: NSObject, NSApplicationDelegate,
         completionHandler([.banner, .list])
     }
 
-    /// Routes only the system's default notification click. The response object
-    /// itself is not Sendable, so validation is completed before hopping to the
-    /// MainActor and only the opaque notification ID crosses that boundary.
+    /// Routes only the system's default notification click. The async delegate
+    /// return is UserNotifications' completion boundary, so local pane focus and
+    /// the terminal activation request remain inside the response lifetime.
+    /// The response is not Sendable; only its parsed opaque ID crosses to the
+    /// MainActor.
     nonisolated func userNotificationCenter(
         _: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse,
-        withCompletionHandler completionHandler: @escaping @Sendable () -> Void
-    ) {
+        didReceive response: UNNotificationResponse
+    ) async {
         guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
               let notificationID = AgentNotificationCenter.attentionNotificationID(
                   from: response.notification.request
               ) else {
-            completionHandler()
             return
         }
 
-        Task { @MainActor [weak self] in
-            self?.notificationActionHandler?(notificationID)
-            completionHandler()
-        }
+        await performNotificationAction(notificationID)
+    }
+
+    /// Awaits the app-owned action so returning from the async delegate cannot
+    /// precede Herdr pane selection or the AppKit activation handoff request.
+    func performNotificationAction(_ notificationID: AttentionNotificationID) async {
+        await notificationActionHandler?(notificationID)
     }
 }
 
@@ -177,7 +306,7 @@ struct ShepherdApp: App {
                     paneID: destination.pane.paneId
                 ))
             } else {
-                store?.focus(destination.pane, sourceID: destination.sourceID)
+                await store?.focus(destination.pane, sourceID: destination.sourceID)
             }
         }
         applicationDelegate.notificationTerminationHandler = {

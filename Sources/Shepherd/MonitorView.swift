@@ -100,7 +100,9 @@ struct MonitorView: View {
                     style: .window,
                     highlightedPaneID: highlightedPaneID
                 ) { pane in
-                    store.focus(pane, sourceID: .local)
+                    Task { @MainActor in
+                        await store.focus(pane, sourceID: .local)
+                    }
                 }
             }
             // A request can precede scene presentation, so read the active handoff

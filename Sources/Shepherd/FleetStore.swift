@@ -398,37 +398,81 @@ typealias EndpointStoreFactory = @MainActor (
 
 /// Jump-to-local-pane action. Separates FleetStore's source guard from the actual
 /// RPC so tests can assert this dependency is never invoked for a remote source.
+/// Completion covers pane selection, Shepherd activation, and the terminal
+/// activation request.
 struct LocalAgentFocus {
-    var focus: @MainActor (_ pane: Pane) -> Void
+    var focus: @MainActor (_ pane: Pane) async -> Void
 
-    static let live = LocalAgentFocus { pane in
-        Task {
+    init(_ focus: @escaping @MainActor (_ pane: Pane) async -> Void) {
+        self.focus = focus
+    }
+
+    init(
+        request: @escaping @MainActor (_ pane: Pane) async throws -> Void,
+        applicationActivation:
+            @escaping @MainActor () async -> ApplicationActivationResult,
+        terminalActivation: @escaping @MainActor () -> TerminalApplicationActivation
+    ) {
+        focus = { pane in
+            let activation = terminalActivation()
             do {
-                _ = try await Herdr.request(
-                    "agent.focus",
-                    params: ["target": pane.terminalId ?? pane.paneId],
-                    socketPath: Herdr.defaultSocketPath,
-                    as: EmptyResult.self
-                )
+                try await request(pane)
             } catch {
                 fleetLog.error("agent.focus failed: \(String(describing: error))")
             }
-            activateConfiguredTerminal()
+            guard await applicationActivation().allowsTerminalHandoff else { return }
+            await activation.activate()
         }
     }
 
+    static let live = LocalAgentFocus(
+        request: { pane in
+            _ = try await Herdr.request(
+                "agent.focus",
+                params: ["target": pane.terminalId ?? pane.paneId],
+                socketPath: Herdr.defaultSocketPath,
+                as: EmptyResult.self
+            )
+        },
+        applicationActivation: {
+            await ApplicationActivationCoordinator.shared.activate()
+        },
+        terminalActivation: { .configured() }
+    )
+}
+
+/// Brings the configured terminal to the foreground after `agent.focus` selects
+/// its pane and Shepherd has become active. Completion means NSWorkspace accepted
+/// the cooperative activation request; target frontmost state remains AppKit-owned.
+struct TerminalApplicationActivation {
+    var activate: @MainActor () async -> Void
+
     @MainActor
-    private static func activateConfiguredTerminal() {
+    static func configured() -> Self {
         let bundleID = UserDefaults.standard.string(forKey: "TerminalBundleID")
             ?? "com.mitchellh.ghostty"
-        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
-            app.activate()
-        } else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
-            NSWorkspace.shared.openApplication(
-                at: url,
-                configuration: NSWorkspace.OpenConfiguration()
-            )
-        }
+        return Self(
+            activate: {
+                guard let url = NSWorkspace.shared.urlForApplication(
+                    withBundleIdentifier: bundleID
+                ) else {
+                    fleetLog.error("configured terminal application was not found")
+                    return
+                }
+                let configuration = NSWorkspace.OpenConfiguration()
+                configuration.activates = true
+                do {
+                    _ = try await NSWorkspace.shared.openApplication(
+                        at: url,
+                        configuration: configuration
+                    )
+                } catch {
+                    fleetLog.error(
+                        "terminal activation failed: \(String(describing: error))"
+                    )
+                }
+            }
+        )
     }
 }
 
@@ -644,9 +688,9 @@ final class FleetStore {
     /// Remote rows are never handed a call site for this. The sourceID check is
     /// layered here as well, so a miswired view cannot send agent.focus to a remote
     /// herdr.
-    func focus(_ pane: Pane, sourceID: HerdrSourceID) {
+    func focus(_ pane: Pane, sourceID: HerdrSourceID) async {
         guard sourceID == .local else { return }
-        localAgentFocus.focus(pane)
+        await localAgentFocus.focus(pane)
     }
 
     private func commit(_ configurations: [RemoteSourceConfiguration]) throws {

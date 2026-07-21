@@ -41,7 +41,9 @@ struct MenuPanel: View {
                     style: .menu,
                     onRemoteEnabledChange: setRemoteEnabled
                 ) { pane in
-                    store.focus(pane, sourceID: .local)
+                    Task { @MainActor in
+                        await store.focus(pane, sourceID: .local)
+                    }
                     dismiss()
                 }
 
