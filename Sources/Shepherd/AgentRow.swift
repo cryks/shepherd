@@ -1,17 +1,13 @@
 // A single agent's row (AgentRow) and the per-workspace headed list
-// (AgentGroupList). Shared components used by both the monitor window and the
-// menu bar panel, so changes to the row layout or heading styling made in this
-// file alone propagate to both surfaces.
-// AgentRow shows the StatusIcons circle on the left (same rendering as the menu
-// bar itself), and on the right two lines — the work title and a sub-line
-// (agent brand mark + branch name) — plus a status string.
-// Only the hover highlight is switched via HoverStyle, to match the native
-// idiom of the surface the row is placed on. Rows from a local source are
-// Buttons carrying agent.focus; rows from a remote source are static,
-// monitor-only displays. Both share the same row layout, and non-interactive
-// rows are not dimmed with a disabled appearance. The monitor window can pass a
-// SourcePaneID selected by notification navigation; that row uses the same
-// rounded background language as list hover and clears on the caller's timer.
+// (AgentGroupList). Both surfaces share the title, subtitle, and available
+// one-line Excerpt. Supported menu rows reserve that line while loading or
+// empty so the panel height stays stable; Monitor rows add it only when text is
+// available.
+//
+// A local row's main content is a Button carrying agent.focus. A remote row's
+// main content remains static. AgentGroupList constructs the cross-source
+// SourcePaneID used by excerpts, notification reveal, and ScrollViewReader
+// identity.
 
 import AppKit
 import SwiftUI
@@ -25,6 +21,10 @@ struct AgentGroupList: View {
     let groups: [(workspace: Workspace, panes: [Pane])]
     let hoverStyle: AgentRow.HoverStyle
     let highlightedPaneID: SourcePaneID?
+    let excerptState: ((SourcePaneID) -> AgentExcerptState?)?
+    /// Menu rows reserve one caption line across loading, available, and empty
+    /// states. Monitor rows render only an available Excerpt.
+    let reservesExcerptLine: Bool
     let onFocus: ((Pane) -> Void)?
 
     init(
@@ -32,12 +32,16 @@ struct AgentGroupList: View {
         groups: [(workspace: Workspace, panes: [Pane])],
         hoverStyle: AgentRow.HoverStyle,
         highlightedPaneID: SourcePaneID? = nil,
+        excerptState: ((SourcePaneID) -> AgentExcerptState?)? = nil,
+        reservesExcerptLine: Bool = false,
         onFocus: ((Pane) -> Void)?
     ) {
         self.sourceID = sourceID
         self.groups = groups
         self.hoverStyle = hoverStyle
         self.highlightedPaneID = highlightedPaneID
+        self.excerptState = excerptState
+        self.reservesExcerptLine = reservesExcerptLine
         self.onFocus = onFocus
     }
 
@@ -72,6 +76,8 @@ struct AgentGroupList: View {
                         pane: identifiedPane.pane,
                         hoverStyle: hoverStyle,
                         isRevealed: identifiedPane.id == highlightedPaneID,
+                        excerptState: excerptState?(identifiedPane.id),
+                        reservesExcerptLine: reservesExcerptLine,
                         onFocus: onFocus.map { action in
                             { action(identifiedPane.pane) }
                         }
@@ -122,6 +128,11 @@ struct AgentRow: View {
     /// Programmatic, transient emphasis used after a notification opens Monitor.
     /// It does not change clickability or establish persistent selection.
     let isRevealed: Bool
+    /// Load state for a supported agent. nil means no grammar exists and keeps
+    /// the title/subtitle layout at two lines.
+    let excerptState: AgentExcerptState?
+    /// Whether loading and empty states reserve the Excerpt caption line.
+    let reservesExcerptLine: Bool
     /// Jump-to action on row click. nil marks a remote, monitor-only row,
     /// which gets no Button and no hover feedback.
     let onFocus: (() -> Void)?
@@ -140,6 +151,8 @@ struct AgentRow: View {
                 rowContent
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
         .padding(.vertical, 3)
         .padding(.horizontal, 12)
         // The foreground color is switched in one place here. The subtitle's
@@ -178,9 +191,69 @@ struct AgentRow: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                excerptLine
             }
         }
-        .contentShape(Rectangle())
+    }
+
+    /// Menu rows keep this caption's metrics mounted for every supported state,
+    /// preventing the panel from resizing when the first Excerpt arrives.
+    /// Monitor rows omit loading and empty states to preserve their current
+    /// information density.
+    @ViewBuilder
+    private var excerptLine: some View {
+        if let excerptState {
+            switch excerptState {
+            case .loading:
+                if reservesExcerptLine {
+                    excerptPlaceholder
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityLabel("Excerpt")
+                        .accessibilityValue("Loading")
+                }
+            case .available(let excerpt):
+                if reservesExcerptLine {
+                    excerptPlaceholder
+                        .hidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        // Overlay content does not participate in vertical
+                        // measurement, so fallback glyph metrics cannot resize
+                        // the menu after the placeholder is replaced.
+                        .overlay(alignment: .leading) {
+                            excerptText(excerpt)
+                        }
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Excerpt")
+                        .accessibilityValue(excerpt.text)
+                } else {
+                    excerptText(excerpt)
+                }
+            case .empty:
+                if reservesExcerptLine {
+                    excerptPlaceholder
+                        .hidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityHidden(true)
+                }
+            }
+        }
+    }
+
+    private func excerptText(_ excerpt: AgentExcerpt) -> some View {
+        Text(excerpt.text)
+            .font(.caption.monospaced())
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .accessibilityLabel("Excerpt")
+            .accessibilityValue(excerpt.text)
+    }
+
+    private var excerptPlaceholder: some View {
+        Text("Loading…")
+            .font(.caption.monospaced())
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
     }
 
     /// Whether we are hovered in menu style. The foreground color inversion

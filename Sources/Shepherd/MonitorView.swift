@@ -1,12 +1,15 @@
 // The pop-out window. Detaches the same list as the menu bar panel (SourceList)
 // into a regular window so the whole herd can stay visible while working.
-// Lists parent agents per connection, and within that per workspace; local rows
-// jump to the corresponding herdr pane, remote rows are monitor-only with no
-// actions. This view's appear/disappear is the sole writer of
-// store.monitorWindowVisible. Notification navigation is received through the
-// app-owned MonitorWindowNavigation. A request opens this singleton scene at the
-// app boundary; once the view appears, it reads the current SourcePaneID, scrolls
-// the matching row into view, and emphasizes it for about two seconds.
+// Lists parent agents per connection, and within that per workspace. Local main
+// rows jump to the corresponding Herdr pane, while remote main rows are static.
+//
+// Each view instance registers a UUID presence lease on appear and releases it
+// on disappear. FleetStore derives window visibility from the lease set, so an
+// outgoing view cannot drop a replacement view's state. Notification
+// navigation is received through the
+// app-owned MonitorWindowNavigation. A request opens this singleton scene at
+// the app boundary; once the view appears, it reads the current SourcePaneID,
+// scrolls the matching row into view, and emphasizes it for about two seconds.
 //
 // This file owns the window's appearance: on top of the standard opaque window
 // background, SourceList (window style) floats a rounded-corner card per
@@ -18,6 +21,7 @@
 // Window("Shepherd") title still appears in window overviews such as Mission
 // Control). The top right adds chips with per-status agent counts.
 
+import Foundation
 import Observation
 import SwiftUI
 
@@ -85,6 +89,7 @@ struct MonitorView: View {
 
     @State private var highlightedPaneID: SourcePaneID?
     @State private var revealTask: Task<Void, Never>?
+    @State private var presenceID = UUID()
 
     @MainActor
     init(store: FleetStore, navigation: MonitorWindowNavigation) {
@@ -98,7 +103,8 @@ struct MonitorView: View {
                 SourceList(
                     sections: store.sourceSections,
                     style: .window,
-                    highlightedPaneID: highlightedPaneID
+                    highlightedPaneID: highlightedPaneID,
+                    excerptState: store.agentExcerptState(for:)
                 ) { pane in
                     Task { @MainActor in
                         await store.focus(pane, sourceID: .local)
@@ -136,9 +142,11 @@ struct MonitorView: View {
             }
         }
         .frame(minWidth: 320, minHeight: 240)
-        .onAppear { store.monitorWindowVisible = true }
+        .onAppear {
+            store.monitorWindowDidAppear(presenceID)
+        }
         .onDisappear {
-            store.monitorWindowVisible = false
+            store.monitorWindowDidDisappear(presenceID)
             revealTask?.cancel()
             revealTask = nil
             highlightedPaneID = nil

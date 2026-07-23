@@ -3,18 +3,17 @@
 // keeps its header even with monitoring OFF. The local header is omitted when
 // the local endpoint is the only one, or when LocalSectionTitleSetting is set
 // to hidden, in which case the agent rows are laid out directly.
-// onFocus is passed only for local; remote rows keep the same information
-// density but are monitor-only.
+// onFocus is passed only for local, so a remote row's main content is static.
 //
 // The same section column is rendered two ways via Style:
 // - menu: NSMenu-style, laying rows directly on the panel surface. Headers use
 //   headline, and remote headers carry a monitoring ON/OFF checkbox (when OFF,
-//   the checkbox conveys the state, so no body is drawn).
+//   the checkbox conveys the state, so no body is drawn). Supported rows reserve
+//   a third line for Loading or a display-safe Excerpt.
 // - window: settings-app style, floating each section body above the window
 //   background as a rounded card. No checkbox; monitoring OFF is shown as a
-//   single line inside the card. A notification action can additionally pass a
-//   current SourcePaneID; only this presentation forwards it to AgentRow for a
-//   transient reveal highlight.
+//   single line inside the card. This presentation forwards cross-source
+//   excerpt lookup and notification reveal to AgentGroupList.
 
 import SwiftUI
 
@@ -35,6 +34,7 @@ struct SourceList: View {
     let sections: [FleetSourceSection]
     let style: Style
     let highlightedPaneID: SourcePaneID?
+    let excerptState: ((SourcePaneID) -> AgentExcerptState?)?
     let onRemoteEnabledChange: ((HerdrSourceID, Bool) -> Void)?
     let onLocalFocus: (Pane) -> Void
 
@@ -42,12 +42,14 @@ struct SourceList: View {
         sections: [FleetSourceSection],
         style: Style,
         highlightedPaneID: SourcePaneID? = nil,
+        excerptState: ((SourcePaneID) -> AgentExcerptState?)? = nil,
         onRemoteEnabledChange: ((HerdrSourceID, Bool) -> Void)? = nil,
         onLocalFocus: @escaping (Pane) -> Void
     ) {
         self.sections = sections
         self.style = style
         self.highlightedPaneID = highlightedPaneID
+        self.excerptState = excerptState
         self.onRemoteEnabledChange = onRemoteEnabledChange
         self.onLocalFocus = onLocalFocus
     }
@@ -82,6 +84,7 @@ struct SourceList: View {
                 MenuSourceSection(
                     section: section,
                     headerTitle: hasRemoteSections ? section.headerTitle : nil,
+                    excerptState: excerptState,
                     onRemoteEnabledChange: onRemoteEnabledChange,
                     onLocalFocus: onLocalFocus
                 )
@@ -108,6 +111,7 @@ struct SourceList: View {
                     section: section,
                     headerTitle: hasRemoteSections ? section.headerTitle : nil,
                     highlightedPaneID: highlightedPaneID,
+                    excerptState: excerptState,
                     onLocalFocus: onLocalFocus
                 )
             }
@@ -125,6 +129,7 @@ private struct MenuSourceSection: View {
     /// one, or the local hidden setting). Remote sections put the checkbox in
     /// the header, so while remotes exist the caller always passes non-nil.
     let headerTitle: String?
+    let excerptState: ((SourcePaneID) -> AgentExcerptState?)?
     let onRemoteEnabledChange: ((HerdrSourceID, Bool) -> Void)?
     let onLocalFocus: (Pane) -> Void
 
@@ -147,6 +152,8 @@ private struct MenuSourceSection: View {
                         sourceID: section.id,
                         groups: section.workspaceGroups,
                         hoverStyle: .menu,
+                        excerptState: excerptState,
+                        reservesExcerptLine: true,
                         onFocus: section.isRemote ? nil : onLocalFocus
                     )
                 }
@@ -214,6 +221,7 @@ private struct WindowSourceSection: View {
     /// Current cross-source row identity requested by notification navigation.
     /// It may belong to another section; AgentGroupList compares the full ID.
     let highlightedPaneID: SourcePaneID?
+    let excerptState: ((SourcePaneID) -> AgentExcerptState?)?
     let onLocalFocus: (Pane) -> Void
 
     var body: some View {
@@ -240,6 +248,7 @@ private struct WindowSourceSection: View {
                             groups: section.workspaceGroups,
                             hoverStyle: .list,
                             highlightedPaneID: highlightedPaneID,
+                            excerptState: excerptState,
                             onFocus: section.isRemote ? nil : onLocalFocus
                         )
                     }

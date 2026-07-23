@@ -1,7 +1,8 @@
 // Types only for the portion of the herdr socket API (protocol 17) JSON that
 // this app reads. session.snapshot's agents elements are received as Pane and
 // its workspaces elements as Workspace; worktree.list's worktrees elements are
-// received as WorktreeEntry.
+// received as WorktreeEntry. Agent screen monitoring decodes agent.get into
+// HerdrAgentInfo and agent.read into PaneRead.
 // Decoding assumes keyDecodingStrategy = .convertFromSnakeCase, so field names
 // are the JSON's snake_case converted to camelCase. Unknown keys are ignored.
 
@@ -11,7 +12,7 @@ import Foundation
 /// idle and done are the same underlying "waiting" state; done applies only
 /// while the completion result is unviewed in herdr. Viewing the pane in herdr
 /// turns done back to idle, so this app keeps no read/unread tracking of its own.
-enum AgentStatus: String, Codable {
+enum AgentStatus: String, Codable, Sendable {
     case idle, working, blocked, done, unknown
 }
 
@@ -27,6 +28,11 @@ struct Pane: Codable, Identifiable, Equatable {
     /// observations and notification IDs; protocol 17 agent methods no longer
     /// accept terminal IDs, so LocalAgentFocus targets the current paneId instead.
     var terminalId: String?
+    /// Pane revision from session.snapshot. It is optional in Shepherd's model
+    /// so synthetic and older cached fixtures can omit it; protocol 17 supplies
+    /// it for live agents. Herdr does not advance it for every terminal write,
+    /// so AgentReadMonitor uses each successful snapshot as a read opportunity.
+    var revision: UInt64? = nil
     /// Terminal title with decorations like spinners stripped. Used to show the
     /// agent's current work.
     var terminalTitleStripped: String?
@@ -156,3 +162,133 @@ struct WorktreeEntry: Codable {
 
 /// For RPCs whose result body is not read (agent.focus, etc.).
 struct EmptyResult: Codable {}
+
+// MARK: - Agent screen reads
+
+/// The native session reference Herdr associates with the current agent
+/// occupant. The whole value participates in occupant identity: a terminal may
+/// keep its terminal ID while the agent process starts a different native
+/// session.
+struct HerdrAgentSession: Codable, Equatable, Sendable {
+    /// Representation used for `value`. Protocol 17 supports either a native
+    /// session ID or a session path.
+    enum Kind: String, Codable, Sendable {
+        case id
+        case path
+    }
+
+    /// Authority that reported the native session, such as `herdr:codex`.
+    var source: String
+    /// Canonical agent label belonging to the reported session.
+    var agent: String
+    var kind: Kind
+    var value: String
+}
+
+/// The protocol 17 subset of `AgentInfo` needed to bracket an `agent.read`.
+/// Callers compare values returned before and after a screen read so a status
+/// transition or occupant replacement cannot be presented as one coherent
+/// observation.
+struct HerdrAgentInfo: Codable, Equatable, Sendable {
+    /// Canonical agent label. The protocol schema permits null even though
+    /// `agent.get` resolves only panes that currently have agent identity.
+    var agent: String?
+    var agentStatus: AgentStatus
+    var paneId: String
+    var workspaceId: String
+    var tabId: String
+    /// Stable terminal identity across pane moves.
+    var terminalId: String
+    /// Pane presentation and metadata revision captured by `agent.get`.
+    var revision: UInt64
+    /// Monotonic sequence for semantic agent-state transitions. Herdr omits the
+    /// field when no transition has been recorded, which decodes as zero.
+    var stateChangeSeq: UInt64
+    /// Native agent session identity when an official integration has reported
+    /// one. It is absent for screen-detected sessions.
+    var agentSession: HerdrAgentSession?
+
+    private enum CodingKeys: String, CodingKey {
+        case agent
+        case agentStatus
+        case paneId
+        case workspaceId
+        case tabId
+        case terminalId
+        case revision
+        case stateChangeSeq
+        case agentSession
+    }
+
+    init(
+        agent: String?,
+        agentStatus: AgentStatus,
+        paneId: String,
+        workspaceId: String,
+        tabId: String,
+        terminalId: String,
+        revision: UInt64,
+        stateChangeSeq: UInt64,
+        agentSession: HerdrAgentSession?
+    ) {
+        self.agent = agent
+        self.agentStatus = agentStatus
+        self.paneId = paneId
+        self.workspaceId = workspaceId
+        self.tabId = tabId
+        self.terminalId = terminalId
+        self.revision = revision
+        self.stateChangeSeq = stateChangeSeq
+        self.agentSession = agentSession
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        agent = try container.decodeIfPresent(String.self, forKey: .agent)
+        agentStatus = try container.decode(AgentStatus.self, forKey: .agentStatus)
+        paneId = try container.decode(String.self, forKey: .paneId)
+        workspaceId = try container.decode(String.self, forKey: .workspaceId)
+        tabId = try container.decode(String.self, forKey: .tabId)
+        terminalId = try container.decode(String.self, forKey: .terminalId)
+        revision = try container.decode(UInt64.self, forKey: .revision)
+        stateChangeSeq = try container.decodeIfPresent(UInt64.self, forKey: .stateChangeSeq) ?? 0
+        agentSession = try container.decodeIfPresent(HerdrAgentSession.self, forKey: .agentSession)
+    }
+}
+
+/// Result body returned by `agent.get`.
+struct AgentGetResult: Codable, Equatable, Sendable {
+    var agent: HerdrAgentInfo
+}
+
+/// Plain terminal data returned inside the protocol's `pane_read` result.
+struct PaneRead: Codable, Equatable, Sendable {
+    enum Source: String, Codable, Sendable {
+        case visible
+        case recent
+        case recentUnwrapped = "recent_unwrapped"
+        case detection
+    }
+
+    enum Format: String, Codable, Sendable {
+        case text
+        case ansi
+    }
+
+    var paneId: String
+    var workspaceId: String
+    var tabId: String
+    var source: Source
+    var format: Format
+    var text: String
+    /// Protocol revision field returned with `text`. Herdr 0.7.5 hard-codes zero
+    /// for every source, and protocol 17 defines no correlation with AgentInfo.
+    var revision: UInt64
+    /// True when Herdr omitted bytes because its response limit was reached.
+    var truncated: Bool
+}
+
+/// Result body returned by `agent.read`.
+struct AgentReadResult: Codable, Equatable, Sendable {
+    var read: PaneRead
+}

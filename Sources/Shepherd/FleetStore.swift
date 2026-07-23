@@ -275,9 +275,13 @@ final class MonitoredSource: Identifiable {
         tunnel.onStateChange = { [weak self] state in
             guard let self else { return }
             self.tunnelState = state
-            if case .ready = state, !self.storeHasStarted {
-                self.storeHasStarted = true
-                self.store.start()
+            if case .ready = state {
+                if !self.storeHasStarted {
+                    self.storeHasStarted = true
+                    self.store.start()
+                }
+            } else {
+                self.store.markAgentContentSourceUnavailable()
             }
         }
         tunnelState = tunnel.state
@@ -336,6 +340,7 @@ final class MonitoredSource: Identifiable {
             return nil
         }
     }
+
 }
 
 private extension RemoteTunnelFailure.Kind {
@@ -489,7 +494,13 @@ struct TerminalApplicationActivation {
 final class FleetStore {
     private(set) var activeSources: [MonitoredSource]
     private(set) var remoteConfigurations: [RemoteSourceConfiguration]
-    var monitorWindowVisible = false
+    /// True while at least one SwiftUI instance of the singleton Monitor scene
+    /// is mounted. Outgoing and incoming instances can overlap during window
+    /// reopening, so this derives from presence leases rather than last-writer
+    /// appear/disappear callbacks.
+    var monitorWindowVisible: Bool {
+        !monitorWindowPresenceIDs.isEmpty
+    }
 
     private let repository: RemoteSourceRepository
     private let tunnelFactory: RemoteTunnelFactory
@@ -498,6 +509,7 @@ final class FleetStore {
     private let localSource: MonitoredSource
     private var hasStarted = false
     private var hasStopped = false
+    private var monitorWindowPresenceIDs: Set<UUID> = []
     /// true while the system is asleep. Sources created by reconcileSources during
     /// this window are also suspended, and resumePolling() resumes them all at once.
     private var isPollingSuspended = false
@@ -584,6 +596,7 @@ final class FleetStore {
     func stop() {
         guard !hasStopped else { return }
         hasStopped = true
+        monitorWindowPresenceIDs.removeAll()
         activeSources.forEach { $0.stop() }
     }
 
@@ -686,6 +699,49 @@ final class FleetStore {
 
     func monitoredSource(id: HerdrSourceID) -> MonitoredSource? {
         activeSources.first { $0.id == id }
+    }
+
+    /// Display-safe Excerpt for one currently ready source pane.
+    func agentExcerpt(for paneID: SourcePaneID) -> AgentExcerpt? {
+        guard let state = agentExcerptState(for: paneID),
+              case .available(let excerpt) = state else {
+            return nil
+        }
+        return excerpt
+    }
+
+    /// Loading state for one ready Codex or Claude pane. nil means the current
+    /// row has no supported terminal grammar and must keep its two-line layout.
+    /// A supported pane returns loading until its first background read
+    /// completes, so MenuPanel reserves the third line in its first layout.
+    func agentExcerptState(for paneID: SourcePaneID) -> AgentExcerptState? {
+        guard let source = monitoredSource(id: paneID.sourceID),
+              source.state == .ready,
+              let pane = source.store.panes[paneID.paneID],
+              isAgentContentSupported(pane) else {
+            return nil
+        }
+        return source.store.agentExcerptState(for: paneID.paneID)
+    }
+
+    /// Codex and Claude are the only terminal grammars with excerpt support in
+    /// the first screen-monitoring release.
+    func isAgentContentSupported(_ pane: Pane) -> Bool {
+        pane.agent.map(AgentExcerptMachine.supports(agentID:)) ?? false
+    }
+
+    /// Acquires one Monitor scene presence lease. Repeated appear callbacks
+    /// from the same view instance are idempotent. The lease derives
+    /// monitorWindowVisible; excerpt reads run in the background regardless of
+    /// mounted surfaces.
+    func monitorWindowDidAppear(_ presenceID: UUID) {
+        guard !hasStopped else { return }
+        monitorWindowPresenceIDs.insert(presenceID)
+    }
+
+    /// Releases one Monitor scene presence lease.
+    func monitorWindowDidDisappear(_ presenceID: UUID) {
+        monitorWindowPresenceIDs.remove(presenceID)
     }
 
     /// Remote rows are never handed a call site for this. The sourceID check is

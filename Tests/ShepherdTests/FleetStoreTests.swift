@@ -1,13 +1,384 @@
-// Verifies the contract that aggregates the ready snapshots of multiple sources
-// into a single menu bar state. Without using SSH or Unix sockets, it reproduces
-// with plain values the conditions where the same pane ID can exist per endpoint
-// and where some sources are disconnected and produce no snapshot.
+// Verifies fleet-level source aggregation, runtime reconciliation, focus
+// routing, and background excerpt reads without opening SSH connections or
+// Unix sockets. Injected Stores and tunnels reproduce cross-endpoint pane IDs,
+// disconnections, lifecycle replacement, and overlapping SwiftUI surfaces.
 
 import Foundation
 import XCTest
 @testable import Shepherd
 
 final class FleetStoreTests: XCTestCase {
+    @MainActor
+    func testMonitorPresenceRemainsActiveWhileViewInstancesOverlap() {
+        let fleet = FleetStore(
+            repository: RemoteSourceRepository(load: { [] }, save: { _ in }),
+            localStore: Store(initialState: .disconnected)
+        )
+        let outgoing = UUID()
+        let incoming = UUID()
+
+        XCTAssertFalse(fleet.monitorWindowVisible)
+
+        fleet.monitorWindowDidAppear(outgoing)
+        fleet.monitorWindowDidAppear(incoming)
+        XCTAssertTrue(fleet.monitorWindowVisible)
+
+        fleet.monitorWindowDidDisappear(outgoing)
+        XCTAssertTrue(
+            fleet.monitorWindowVisible,
+            "outgoing view disabled monitoring after its replacement appeared"
+        )
+
+        fleet.monitorWindowDidDisappear(incoming)
+        XCTAssertFalse(fleet.monitorWindowVisible)
+    }
+
+    @MainActor
+    func testUnsupportedAgentHasNoExcerptRowState() {
+        let paneID = "local:unsupported"
+        let snapshot = AgentSnapshot(
+            agents: [
+                Pane(
+                    agent: "opencode",
+                    agentStatus: .working,
+                    paneId: paneID,
+                    workspaceId: "w1",
+                    terminalId: "terminal-\(paneID)",
+                    terminalTitleStripped: "Unsupported agent",
+                    tokens: PaneTokens(agentKind: "primary")
+                ),
+            ],
+            workspaces: [
+                Workspace(workspaceId: "w1", label: "Workspace", number: 1),
+            ]
+        )
+        let fleet = FleetStore(
+            repository: RemoteSourceRepository(load: { [] }, save: { _ in }),
+            localStore: Store(initialState: .ready(snapshot))
+        )
+        defer { fleet.stop() }
+
+        XCTAssertNil(fleet.agentExcerptState(for: SourcePaneID(
+            sourceID: .local,
+            paneID: paneID
+        )))
+    }
+
+    @MainActor
+    func testExcerptReadsRunInBackgroundWithoutUISurfaces() async {
+        let paneID = "local:p1"
+        let sourcePaneID = SourcePaneID(sourceID: .local, paneID: paneID)
+        let screen = """
+        • Explored
+          └ Read Sources/App/Preview.swift
+
+        • Keeping the menu excerpt alive (1s • esc to interrupt)
+
+        › Add preview support
+
+          tab to queue message                         100% context left
+        """
+        let getCalls = CallCounter()
+        let readCalls = CallCounter()
+        let info = AgentGetResult(agent: HerdrAgentInfo(
+            agent: "codex",
+            agentStatus: .working,
+            paneId: paneID,
+            workspaceId: "w1",
+            tabId: "w1:t1",
+            terminalId: "terminal-\(paneID)",
+            revision: 10,
+            stateChangeSeq: 1,
+            agentSession: nil
+        ))
+        let read = AgentReadResult(read: PaneRead(
+            paneId: paneID,
+            workspaceId: "w1",
+            tabId: "w1:t1",
+            source: .visible,
+            format: .text,
+            text: screen,
+            revision: 10,
+            truncated: false
+        ))
+        let localStore = endpointStore(
+            snapshot: snapshot(status: .working, paneID: paneID),
+            agentReadDataSource: AgentReadDataSource(
+                get: { target in
+                    guard target == paneID else {
+                        throw FleetTestError.unexpectedCall
+                    }
+                    getCalls.increment()
+                    return info
+                },
+                readVisible: { target in
+                    guard target == paneID else {
+                        throw FleetTestError.unexpectedCall
+                    }
+                    readCalls.increment()
+                    return read
+                }
+            )
+        )
+        let fleet = FleetStore(
+            repository: RemoteSourceRepository(load: { [] }, save: { _ in }),
+            localStore: localStore
+        )
+        let monitorPresenceID = UUID()
+        defer { fleet.stop() }
+
+        try? await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(
+            fleet.agentExcerptState(for: sourcePaneID),
+            .some(.loading)
+        )
+        XCTAssertEqual(
+            getCalls.count,
+            0,
+            "a terminal-content RPC ran before the fleet started"
+        )
+        XCTAssertEqual(
+            readCalls.count,
+            0,
+            "a terminal-content RPC ran before the fleet started"
+        )
+
+        fleet.start()
+
+        // No menu or Monitor surface is mounted; the excerpt still loads.
+        let backgroundExcerptPublished = await waitUntil {
+            fleet.agentExcerpt(for: sourcePaneID)?.text ==
+                "Keeping the menu excerpt alive"
+        }
+        XCTAssertTrue(backgroundExcerptPublished)
+        XCTAssertEqual(
+            fleet.agentExcerptState(for: sourcePaneID),
+            .some(.available(AgentExcerpt(
+                text: "Keeping the menu excerpt alive",
+                kind: .activity,
+                confidence: .medium,
+                screenRevision: 10
+            )))
+        )
+        XCTAssertFalse(fleet.monitorWindowVisible)
+
+        fleet.monitorWindowDidAppear(monitorPresenceID)
+        XCTAssertTrue(fleet.monitorWindowVisible)
+
+        fleet.monitorWindowDidDisappear(monitorPresenceID)
+        XCTAssertFalse(fleet.monitorWindowVisible)
+        XCTAssertEqual(
+            fleet.agentExcerpt(for: sourcePaneID)?.text,
+            "Keeping the menu excerpt alive",
+            "closing Monitor cleared the background excerpt cache"
+        )
+    }
+
+    @MainActor
+    func testRemoteContentWaitsForTunnelReadyAndClearsOnDisconnect() async {
+        let remote = remoteConfiguration(index: 12, enabled: true)
+        let paneID = "remote:p1"
+        let sourcePaneID = SourcePaneID(sourceID: remote.id, paneID: paneID)
+        let screen = """
+        • Explored
+          └ Read Sources/App/Preview.swift
+
+        • Waiting for tunnel-safe reads (1s • esc to interrupt)
+
+        › Add preview support
+
+          tab to queue message                         100% context left
+        """
+        let getCalls = CallCounter()
+        let readCalls = CallCounter()
+        let info = AgentGetResult(agent: HerdrAgentInfo(
+            agent: "codex",
+            agentStatus: .working,
+            paneId: paneID,
+            workspaceId: "w1",
+            tabId: "w1:t1",
+            terminalId: "terminal-\(paneID)",
+            revision: 10,
+            stateChangeSeq: 1,
+            agentSession: nil
+        ))
+        let read = AgentReadResult(read: PaneRead(
+            paneId: paneID,
+            workspaceId: "w1",
+            tabId: "w1:t1",
+            source: .visible,
+            format: .text,
+            text: screen,
+            revision: 10,
+            truncated: false
+        ))
+        let agentReads = AgentReadDataSource(
+            get: { target in
+                guard target == paneID else {
+                    throw FleetTestError.unexpectedCall
+                }
+                getCalls.increment()
+                return info
+            },
+            readVisible: { target in
+                guard target == paneID else {
+                    throw FleetTestError.unexpectedCall
+                }
+                readCalls.increment()
+                return read
+            }
+        )
+        let remoteStore = endpointStore(
+            snapshot: snapshot(status: .working, paneID: paneID),
+            agentReadDataSource: agentReads
+        )
+        var tunnel: FleetTestTunnel!
+        let fleet = FleetStore(
+            repository: RemoteSourceRepository(
+                load: { [remote] },
+                save: { _ in }
+            ),
+            localStore: countingStore(
+                counter: CallCounter(),
+                pollInterval: .seconds(60)
+            ),
+            tunnelFactory: { configuration in
+                tunnel = FleetTestTunnel(
+                    configuration: configuration,
+                    localSocketPath: "/tmp/fleet-content-ready.sock",
+                    state: .connecting(attempt: 1)
+                )
+                return tunnel
+            },
+            remoteStoreFactory: { _, _ in remoteStore }
+        )
+        defer { fleet.stop() }
+
+        fleet.start()
+        try? await Task.sleep(for: .milliseconds(20))
+
+        XCTAssertEqual(getCalls.count, 0)
+        XCTAssertEqual(readCalls.count, 0)
+        XCTAssertNil(fleet.agentExcerpt(for: sourcePaneID))
+
+        tunnel.transition(to: .ready(localSocketPath: tunnel.localSocketPath))
+
+        let contentPublished = await waitUntil {
+            fleet.agentExcerpt(for: sourcePaneID)?.text ==
+                "Waiting for tunnel-safe reads"
+        }
+        XCTAssertTrue(contentPublished)
+        XCTAssertGreaterThanOrEqual(readCalls.count, 1)
+
+        tunnel.transition(
+            to: .retrying(
+                failure: RemoteTunnelFailure(
+                    phase: .forwarding,
+                    kind: .unreachable,
+                    exitStatus: 255,
+                    diagnostic: "connection lost"
+                ),
+                delay: .seconds(1)
+            )
+        )
+
+        XCTAssertNil(fleet.agentExcerpt(for: sourcePaneID))
+        XCTAssertNil(remoteStore.agentExcerpt(for: paneID))
+    }
+
+    @MainActor
+    func testReplacementSourceRuntimeServesItsOwnExcerpt() async throws {
+        let remote = remoteConfiguration(index: 13, enabled: true)
+        let paneID = "remote:p1"
+        let sourcePaneID = SourcePaneID(sourceID: remote.id, paneID: paneID)
+        var persisted = [remote]
+        let originalScreen = "• Reading original runtime (1s • esc to interrupt)"
+        let replacementScreen = "• Reading replacement runtime (1s • esc to interrupt)"
+
+        func reads(screen: String, revision: UInt64) -> AgentReadDataSource {
+            let info = AgentGetResult(agent: HerdrAgentInfo(
+                agent: "codex",
+                agentStatus: .working,
+                paneId: paneID,
+                workspaceId: "w1",
+                tabId: "w1:t1",
+                terminalId: "terminal-\(paneID)",
+                revision: revision,
+                stateChangeSeq: revision,
+                agentSession: nil
+            ))
+            let read = AgentReadResult(read: PaneRead(
+                paneId: paneID,
+                workspaceId: "w1",
+                tabId: "w1:t1",
+                source: .visible,
+                format: .text,
+                text: screen,
+                revision: revision,
+                truncated: false
+            ))
+            return AgentReadDataSource(
+                get: { _ in info },
+                readVisible: { _ in read }
+            )
+        }
+
+        let originalStore = endpointStore(
+            snapshot: snapshot(status: .working, paneID: paneID),
+            agentReadDataSource: reads(screen: originalScreen, revision: 10)
+        )
+        let replacementStore = endpointStore(
+            snapshot: snapshot(status: .working, paneID: paneID),
+            agentReadDataSource: reads(screen: replacementScreen, revision: 20)
+        )
+        var stores = [originalStore, replacementStore]
+        var tunnelIndex = 0
+        let fleet = FleetStore(
+            repository: RemoteSourceRepository(
+                load: { persisted },
+                save: {
+                    persisted = $0
+                }
+            ),
+            localStore: countingStore(
+                counter: CallCounter(),
+                pollInterval: .seconds(60)
+            ),
+            tunnelFactory: { configuration in
+                tunnelIndex += 1
+                let socketPath = "/tmp/fleet-generation-\(tunnelIndex).sock"
+                return FleetTestTunnel(
+                    configuration: configuration,
+                    localSocketPath: socketPath,
+                    state: .ready(localSocketPath: socketPath)
+                )
+            },
+            remoteStoreFactory: { _, _ in stores.removeFirst() }
+        )
+        defer { fleet.stop() }
+
+        fleet.start()
+        let originalPublished = await waitUntil {
+            fleet.agentExcerpt(for: sourcePaneID)?.text ==
+                "Reading original runtime"
+        }
+        XCTAssertTrue(originalPublished)
+
+        var replacement = remote
+        replacement.sshAlias = "replacement-host"
+        try fleet.updateRemote(replacement)
+
+        let replacementExcerptPublished = await waitUntil {
+            fleet.agentExcerpt(for: sourcePaneID)?.text ==
+                "Reading replacement runtime"
+        }
+        XCTAssertTrue(replacementExcerptPublished)
+        XCTAssertNil(
+            originalStore.agentExcerpt(for: paneID),
+            "the stopped original runtime kept serving its excerpt"
+        )
+    }
+
     @MainActor
     func test接続先を横断して人の操作が必要な状態を優先する() {
         let local = snapshot(status: .working, paneID: "w1:p1")
@@ -666,6 +1037,9 @@ final class FleetStoreTests: XCTestCase {
     @MainActor
     private func endpointStore(
         snapshot: AgentSnapshot,
+        agentReadDataSource: AgentReadDataSource = .live(
+            socketPath: Herdr.defaultSocketPath
+        ),
         pollInterval: Duration = .seconds(60)
     ) -> Store {
         let serverSnapshot = HerdrSessionSnapshot(
@@ -679,6 +1053,7 @@ final class FleetStoreTests: XCTestCase {
                 snapshot: { serverSnapshot },
                 worktrees: { _ in WorktreeListResult(worktrees: []) }
             ),
+            agentReadDataSource: agentReadDataSource,
             pollInterval: pollInterval,
             initialState: .ready(snapshot)
         )

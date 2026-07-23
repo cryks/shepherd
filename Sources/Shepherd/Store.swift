@@ -28,6 +28,10 @@
 //   - suspendPolling() / resumePolling() are a resumable pause for system sleep.
 //     suspend cancels the poll and in-flight RPCs and does not reflect their
 //     results into state. resume fetches once immediately, then restarts polling
+//   - AgentReadMonitor is a separate projection fed by every successful
+//     snapshot. It reads screens in the background (on status changes and at
+//     its own cadence while a pane works) so the excerpt cache is ready before
+//     any UI surface opens, without delaying snapshot or branch publication
 //
 // No read/unread tracking is kept. blocked/done are herdr-side states; viewing the
 // pane in herdr turns done back to idle, and this app's display clears on the next
@@ -131,6 +135,7 @@ final class Store {
     }
 
     private let dataSource: StoreDataSource
+    private let agentReadMonitor: AgentReadMonitor
     private var pollingTask: Task<Void, Never>?
     private var snapshotTask: Task<Void, Never>?
     private var hasStarted = false
@@ -142,11 +147,15 @@ final class Store {
 
     init(
         dataSource: StoreDataSource = .live(socketPath: Herdr.defaultSocketPath),
+        agentReadDataSource: AgentReadDataSource = .live(
+            socketPath: Herdr.defaultSocketPath
+        ),
         pollInterval: Duration = .milliseconds(500),
         initialState: StoreState = .disconnected
     ) {
         precondition(pollInterval > .zero)
         self.dataSource = dataSource
+        agentReadMonitor = AgentReadMonitor(dataSource: agentReadDataSource)
         self.pollInterval = pollInterval
         state = initialState
     }
@@ -157,6 +166,7 @@ final class Store {
     static func live(socketPath: String, pollInterval: Duration) -> Store {
         Store(
             dataSource: .live(socketPath: socketPath),
+            agentReadDataSource: .live(socketPath: socketPath),
             pollInterval: pollInterval
         )
     }
@@ -184,6 +194,18 @@ final class Store {
                 )
             }
             .sorted { $0.workspace.number < $1.workspace.number }
+    }
+
+    /// Current display-safe line for a pane. Terminal text stays in the
+    /// endpoint's AgentReadMonitor rather than entering AgentSnapshot.
+    func agentExcerpt(for paneID: String) -> AgentExcerpt? {
+        agentReadMonitor.excerpt(for: paneID)
+    }
+
+    /// Loading state for a supported pane's Excerpt. FleetStore verifies
+    /// endpoint readiness and grammar support before exposing this to a row.
+    func agentExcerptState(for paneID: String) -> AgentExcerptState {
+        agentReadMonitor.excerptState(for: paneID)
     }
 
     /// The workspace of the group a pane belongs to for display purposes. Panes of
@@ -242,6 +264,7 @@ final class Store {
         pollingTask = nil
         snapshotTask?.cancel()
         snapshotTask = nil
+        agentReadMonitor.stop()
         state = .disconnected
     }
 
@@ -252,6 +275,7 @@ final class Store {
     func suspendPolling() {
         guard !isPollingSuspended else { return }
         isPollingSuspended = true
+        agentReadMonitor.suspend()
         pollingTask?.cancel()
         pollingTask = nil
         // snapshotTask is not reset to nil. This keeps requestSnapshot's
@@ -266,9 +290,16 @@ final class Store {
     func resumePolling() {
         guard isPollingSuspended else { return }
         isPollingSuspended = false
+        agentReadMonitor.resume()
         guard hasStarted, !hasBeenStopped else { return }
         requestSnapshot()
         startPolling()
+    }
+
+    /// Clears screen-derived lifecycle state when the endpoint transport drops
+    /// before session.snapshot itself reports failure.
+    func markAgentContentSourceUnavailable() {
+        agentReadMonitor.sourceUnavailable()
     }
 
     /// Applies a remote-settings poll preset change to the existing Store. The SSH
@@ -316,11 +347,13 @@ final class Store {
             guard !Task.isCancelled, !hasBeenStopped else { return }
             guard serverSnapshot.protocolVersion == Herdr.supportedProtocol else {
                 log.error("protocol mismatch: server=\(serverSnapshot.protocolVersion)")
+                agentReadMonitor.sourceUnavailable()
                 state = .protocolMismatch(serverSnapshot.protocolVersion)
                 return
             }
             let branches = await fetchBranches(for: serverSnapshot)
             guard !Task.isCancelled, !hasBeenStopped else { return }
+            agentReadMonitor.update(panes: serverSnapshot.agents)
             publish(
                 AgentSnapshot(
                     agents: serverSnapshot.agents,
@@ -330,6 +363,7 @@ final class Store {
             )
         } catch {
             guard !Task.isCancelled, !hasBeenStopped else { return }
+            agentReadMonitor.sourceUnavailable()
             state = .disconnected
             log.debug("snapshot failed: \(String(describing: error))")
         }

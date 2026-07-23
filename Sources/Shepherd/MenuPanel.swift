@@ -43,6 +43,7 @@ struct MenuPanel: View {
                 SourceList(
                     sections: store.sourceSections,
                     style: .menu,
+                    excerptState: store.agentExcerptState(for:),
                     onRemoteEnabledChange: setRemoteEnabled
                 ) { pane in
                     Task { @MainActor in
