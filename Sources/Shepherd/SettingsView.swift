@@ -35,7 +35,7 @@ struct SettingsView: View {
                     Label(tr("Remotes", ja: "リモート"), systemImage: "network")
                 }
         }
-        .frame(width: 520, height: 360)
+        .frame(width: 520, height: 500)
         .task {
             updater.refresh()
             await notificationSettings.refresh()
@@ -55,86 +55,91 @@ private struct GeneralSettingsView: View {
 
     var body: some View {
         Form {
-            Toggle(tr("Launch at login", ja: "ログイン時に起動"), isOn: $store.launchAtLogin)
-            Toggle(
-                tr("Show agent icons in color", ja: "エージェントアイコンをカラーで表示"),
-                isOn: $colorAgentIcons
-            )
-            Toggle(
-                tr(
-                    "Blink the menu bar icon when attention is needed",
-                    ja: "対応が必要なときにメニューバーアイコンを点滅"
-                ),
-                isOn: $blinkMenuBarIcon
-            )
-            Toggle(
-                tr(
-                    "Send notifications when agents need attention",
-                    ja: "エージェントに対応が必要なときに通知"
-                ),
-                isOn: Binding(
-                    get: { notificationSettings.isEnabled },
-                    set: { enabled in
-                        Task { await notificationSettings.setEnabled(enabled) }
+            Section(tr("General", ja: "一般")) {
+                Toggle(tr("Launch at login", ja: "ログイン時に起動"), isOn: $store.launchAtLogin)
+                Picker(tr("Language", ja: "言語"), selection: $language.selection) {
+                    ForEach(AppLanguage.allCases) { candidate in
+                        Text(verbatim: candidate.displayName).tag(candidate)
                     }
+                }
+                Toggle(
+                    tr("Automatically check for updates", ja: "アップデートを自動で確認"),
+                    isOn: $updater.automaticallyChecksForUpdates
                 )
-            )
-            if showsNotificationSystemWarning {
-                notificationSystemWarning
             }
-            Toggle(
-                tr(
-                    "Show excerpts (experimental)",
-                    ja: "抜粋を表示（試験機能）"
-                ),
-                isOn: $excerpts.isEnabled
-            )
-            Text(tr(
-                "Reads each Codex and Claude Code terminal in the background and shows the agent's latest message in the list and in notifications.",
-                ja: "Codex と Claude Code のターミナルをバックグラウンドで読み取り、エージェントの最新のメッセージを一覧と通知に表示します。"
-            ))
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            Picker(
-                tr("Excerpt refresh interval", ja: "抜粋の取得間隔"),
-                selection: $excerpts.readInterval
-            ) {
-                ForEach(ExcerptReadInterval.allCases) { interval in
-                    Text(interval.displayName).tag(interval)
+
+            Section(tr("Appearance", ja: "表示")) {
+                Toggle(
+                    tr("Show agent icons in color", ja: "エージェントアイコンをカラーで表示"),
+                    isOn: $colorAgentIcons
+                )
+                Picker(
+                    tr("This Mac label with remotes", ja: "リモート存在時のローカル表記"),
+                    selection: $localTitle.style
+                ) {
+                    ForEach(LocalSectionTitleStyle.allCases) { style in
+                        Text(style.displayName).tag(style)
+                    }
+                }
+                if localTitle.style == .custom {
+                    TextField(
+                        tr("Section title", ja: "セクション見出し"),
+                        text: $localTitle.customTitle,
+                        prompt: Text(LocalSectionTitleSetting.defaultTitle)
+                    )
+                } else if localTitle.style == .hidden {
+                    Text(tr(
+                        "With remotes, agents on this Mac are listed without a section title.",
+                        ja: "リモート存在時、この Mac のエージェントは見出しなしで並びます。"
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
             }
-            .disabled(!excerpts.isEnabled)
-            Picker(
-                tr("This Mac label with remotes", ja: "リモート存在時のローカル表記"),
-                selection: $localTitle.style
-            ) {
-                ForEach(LocalSectionTitleStyle.allCases) { style in
-                    Text(style.displayName).tag(style)
+
+            Section(tr("Notifications", ja: "通知")) {
+                Toggle(
+                    tr(
+                        "Blink the menu bar icon when attention is needed",
+                        ja: "対応が必要なときにメニューバーアイコンを点滅"
+                    ),
+                    isOn: $blinkMenuBarIcon
+                )
+                Toggle(
+                    tr(
+                        "Send notifications when agents need attention",
+                        ja: "エージェントに対応が必要なときに通知"
+                    ),
+                    isOn: Binding(
+                        get: { notificationSettings.isEnabled },
+                        set: { enabled in
+                            Task { await notificationSettings.setEnabled(enabled) }
+                        }
+                    )
+                )
+                if showsNotificationSystemWarning {
+                    notificationSystemWarning
                 }
             }
-            if localTitle.style == .custom {
-                TextField(
-                    tr("Section title", ja: "セクション見出し"),
-                    text: $localTitle.customTitle,
-                    prompt: Text(LocalSectionTitleSetting.defaultTitle)
-                )
-            } else if localTitle.style == .hidden {
+
+            Section(tr("Excerpts (Experimental)", ja: "抜粋（試験機能）")) {
+                Toggle(tr("Show excerpts", ja: "抜粋を表示"), isOn: $excerpts.isEnabled)
                 Text(tr(
-                    "With remotes, agents on this Mac are listed without a section title.",
-                    ja: "リモート存在時、この Mac のエージェントは見出しなしで並びます。"
+                    "Reads each Codex and Claude Code terminal in the background and shows the agent's latest message in the list and in notifications.",
+                    ja: "Codex と Claude Code のターミナルをバックグラウンドで読み取り、エージェントの最新のメッセージを一覧と通知に表示します。"
                 ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            }
-            Picker(tr("Language", ja: "言語"), selection: $language.selection) {
-                ForEach(AppLanguage.allCases) { candidate in
-                    Text(verbatim: candidate.displayName).tag(candidate)
+                Picker(
+                    tr("Excerpt refresh interval", ja: "抜粋の取得間隔"),
+                    selection: $excerpts.readInterval
+                ) {
+                    ForEach(ExcerptReadInterval.allCases) { interval in
+                        Text(interval.displayName).tag(interval)
+                    }
                 }
+                .disabled(!excerpts.isEnabled)
             }
-            Toggle(
-                tr("Automatically check for updates", ja: "アップデートを自動で確認"),
-                isOn: $updater.automaticallyChecksForUpdates
-            )
         }
         .formStyle(.grouped)
     }
