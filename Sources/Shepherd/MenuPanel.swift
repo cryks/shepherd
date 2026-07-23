@@ -163,6 +163,36 @@ struct MenuPanel: View {
     }
 }
 
+/// Opens or closes the MenuBarExtra panel from the global hotkey. SwiftUI has
+/// no programmatic MenuBarExtra presentation API (as of macOS 26), so this
+/// walks the app's windows for the status item's NSStatusBarButton — the
+/// button hosting MenuBarIcon — and clicks it. performClick on the button of
+/// an already-open panel closes it, so the single code path is the toggle.
+@MainActor
+enum MenuBarPanelToggler {
+    static func toggle() {
+        for window in NSApp.windows {
+            guard let button = statusBarButton(under: window.contentView) else {
+                continue
+            }
+            button.performClick(nil)
+            return
+        }
+    }
+
+    /// Depth-first search for the status item button. NSApp.windows only
+    /// contains this process's windows, and Shepherd has a single MenuBarExtra,
+    /// so the first hit is the right one.
+    private static func statusBarButton(under view: NSView?) -> NSStatusBarButton? {
+        guard let view else { return nil }
+        if let button = view as? NSStatusBarButton { return button }
+        for subview in view.subviews {
+            if let button = statusBarButton(under: subview) { return button }
+        }
+        return nil
+    }
+}
+
 /// Button styled after an NSMenu item. The panel uses the .window style and
 /// cannot use NSMenu, so the hover appearance is matched to the native menu's
 /// selected state (accent-color background + selected foreground color) so it

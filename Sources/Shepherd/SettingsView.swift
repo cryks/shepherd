@@ -1,5 +1,6 @@
-// UI for the Settings scene. General settings and remote monitoring targets
-// are separated into tabs. General owns only bindings to app-wide preferences;
+// UI for the Settings scene. General settings, remote monitoring targets, and
+// global hotkeys are separated into tabs. General owns only bindings to
+// app-wide preferences;
 // notification authorization and cleanup stay in NotificationSettingsCoordinator
 // because toggling that preference has operating-system side effects. Remote
 // editing passes only values that passed RemoteSourceConfiguration validation to
@@ -33,6 +34,11 @@ struct SettingsView: View {
             RemoteSourcesSettingsView(store: store)
                 .tabItem {
                     Label(tr("Remotes", ja: "リモート"), systemImage: "network")
+                }
+
+            HotkeySettingsView()
+                .tabItem {
+                    Label(tr("Hotkeys", ja: "ホットキー"), systemImage: "keyboard")
                 }
         }
         .frame(width: 520, height: 500)
@@ -199,6 +205,32 @@ private struct GeneralSettingsView: View {
             }
             .controlSize(.small)
         }
+    }
+}
+
+private struct HotkeySettingsView: View {
+    @Bindable private var hotkeys = HotkeySetting.shared
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent(tr("Open or close the menu", ja: "メニューを開閉")) {
+                    HotkeyRecorderField(combo: $hotkeys.menuPanelCombo)
+                }
+                LabeledContent(
+                    tr("Open or close the pop-out window", ja: "ポップアウトウィンドウを開閉")
+                ) {
+                    HotkeyRecorderField(combo: $hotkeys.monitorWindowCombo)
+                }
+                Text(tr(
+                    "These shortcuts work in any app while Shepherd is running. Include ⌘, ⌃, or ⌥; function keys can stand alone.",
+                    ja: "Shepherd の起動中はどのアプリからでも使えるショートカットです。⌘・⌃・⌥ のいずれかを含めてください（ファンクションキーは単独でも使えます）。"
+                ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 

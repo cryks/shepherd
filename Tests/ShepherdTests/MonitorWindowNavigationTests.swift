@@ -67,6 +67,29 @@ final class MonitorWindowNavigationTests: XCTestCase {
     }
 
     @MainActor
+    func testCloseRequestAdvancesOnlyTheCloseRevision() {
+        let navigation = MonitorWindowNavigation()
+
+        navigation.requestClose()
+        XCTAssertEqual(navigation.closeRevision, 1)
+        XCTAssertEqual(navigation.openRevision, 0)
+
+        navigation.requestClose()
+        XCTAssertEqual(navigation.closeRevision, 2)
+    }
+
+    @MainActor
+    func testOpenRequestLeavesTheCloseRevisionUntouched() {
+        let navigation = MonitorWindowNavigation()
+
+        navigation.requestClose()
+        navigation.open()
+
+        XCTAssertEqual(navigation.closeRevision, 1)
+        XCTAssertEqual(navigation.openRevision, 1)
+    }
+
+    @MainActor
     func testRevealExpiresAfterTheHandoffLease() async throws {
         let navigation = MonitorWindowNavigation(
             revealHandoffDuration: .milliseconds(1)

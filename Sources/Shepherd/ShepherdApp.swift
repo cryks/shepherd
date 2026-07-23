@@ -263,6 +263,7 @@ struct ShepherdApp: App {
     @State private var notificationSettings: NotificationSettingsCoordinator
     @State private var updater: UpdaterModel
     private let attentionMonitor: AttentionMonitor
+    private let hotkeyCenter: GlobalHotkeyCenter
 
     init() {
         let store = FleetStore()
@@ -289,10 +290,29 @@ struct ShepherdApp: App {
             MenuBarIconPresentation.blinkEnabled()
                 && MenuBarIconPresentation.shouldBlink(store.menuBarState)
         }
+        // Global hotkeys. The menu panel has no SwiftUI open/close API, so its
+        // toggle clicks the status item button; the monitor window toggle goes
+        // through MonitorWindowNavigation like every other app-level trigger.
+        let hotkeyCenter = GlobalHotkeyCenter(setting: HotkeySetting.shared) {
+            [weak store, weak monitorNavigation] action in
+            switch action {
+            case .toggleMenuPanel:
+                MenuBarPanelToggler.toggle()
+            case .toggleMonitorWindow:
+                guard let store, let monitorNavigation else { return }
+                if store.monitorWindowVisible {
+                    monitorNavigation.requestClose()
+                } else {
+                    monitorNavigation.open()
+                }
+            }
+        }
         attentionMonitor.start(enabled: notificationSettings.isEnabled)
         store.start()
         menuBarBlinkClock.start()
+        hotkeyCenter.start()
         self.attentionMonitor = attentionMonitor
+        self.hotkeyCenter = hotkeyCenter
         _store = State(initialValue: store)
         _menuBarBlinkClock = State(initialValue: menuBarBlinkClock)
         _monitorNavigation = State(initialValue: monitorNavigation)
@@ -334,7 +354,7 @@ struct ShepherdApp: App {
         } label: {
             MenuBarIcon(store: store, blinkClock: menuBarBlinkClock)
                 .background {
-                    MonitorWindowOpenReceiver(navigation: monitorNavigation)
+                    MonitorWindowRequestReceiver(navigation: monitorNavigation)
                 }
         }
         .menuBarExtraStyle(.window)
@@ -369,15 +389,20 @@ struct ShepherdApp: App {
     }
 }
 
-/// Installs the SwiftUI OpenWindowAction at the always-mounted menu bar label.
-/// Notification responses can arrive while the Monitor scene does not exist, so
-/// MonitorWindowNavigation retains the request and this receiver opens the
-/// singleton scene once its environment is available. `openRevision` also makes
-/// repeated clicks bring an already-open window forward.
-private struct MonitorWindowOpenReceiver: View {
+/// Installs the SwiftUI OpenWindowAction and DismissWindowAction at the
+/// always-mounted menu bar label. Notification responses and hotkey presses
+/// can arrive while the Monitor scene does not exist, so
+/// MonitorWindowNavigation retains the request and this receiver acts on the
+/// singleton scene once its environment is available. `openRevision` also
+/// makes repeated clicks bring an already-open window forward. Close requests
+/// pending from before the label appeared are not replayed: they targeted a
+/// window that no longer exists (the scene is never restored at launch).
+private struct MonitorWindowRequestReceiver: View {
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
     let navigation: MonitorWindowNavigation
-    @State private var handledRevision: UInt64 = 0
+    @State private var handledOpenRevision: UInt64 = 0
+    @State private var handledCloseRevision: UInt64 = 0
 
     var body: some View {
         Color.clear
@@ -385,15 +410,25 @@ private struct MonitorWindowOpenReceiver: View {
             .onChange(of: navigation.openRevision) {
                 openIfNeeded()
             }
+            .onChange(of: navigation.closeRevision) {
+                closeIfNeeded()
+            }
     }
 
     private func openIfNeeded() {
         let revision = navigation.openRevision
-        guard revision != 0, revision != handledRevision else { return }
-        handledRevision = revision
+        guard revision != 0, revision != handledOpenRevision else { return }
+        handledOpenRevision = revision
         openWindow(id: monitorWindowId)
         // LSUIElement apps are not activated when a SwiftUI window opens.
         NSApp.activate()
+    }
+
+    private func closeIfNeeded() {
+        let revision = navigation.closeRevision
+        guard revision != 0, revision != handledCloseRevision else { return }
+        handledCloseRevision = revision
+        dismissWindow(id: monitorWindowId)
     }
 }
 

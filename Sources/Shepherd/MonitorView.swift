@@ -25,10 +25,12 @@ import Foundation
 import Observation
 import SwiftUI
 
-/// Main-actor handoff between notification action routing and the singleton
-/// Monitor scene. `openRevision` changes for every request, including repeated
-/// clicks on the same agent and open-only fallbacks, so an always-mounted view
-/// with OpenWindowAction can react without owning notification semantics.
+/// Main-actor handoff between app-level triggers (notification action routing,
+/// the global hotkey) and the singleton Monitor scene. `openRevision` changes
+/// for every request, including repeated clicks on the same agent and
+/// open-only fallbacks, so an always-mounted view with OpenWindowAction can
+/// react without owning notification semantics; `closeRevision` is the same
+/// mechanism for dismissal.
 /// The latest reveal target remains readable for a short handoff lease. A closing
 /// window can receive the revision just before disappearing; retaining the target
 /// lets the replacement scene read it on appear instead of losing the click.
@@ -40,6 +42,10 @@ final class MonitorWindowNavigation {
     }
 
     private(set) var openRevision: UInt64 = 0
+    /// Advances for every dismiss request (global hotkey toggle). Open and
+    /// close use separate revisions so an open arriving while a close is
+    /// unconsumed cannot be lost, and vice versa.
+    private(set) var closeRevision: UInt64 = 0
     private var revealRequest: RevealRequest?
     @ObservationIgnored private let revealHandoffDuration: Duration
     @ObservationIgnored private var revealExpiryTask: Task<Void, Never>?
@@ -73,6 +79,14 @@ final class MonitorWindowNavigation {
             self?.revealRequest = nil
             self?.revealExpiryTask = nil
         }
+    }
+
+    /// Requests that the singleton Monitor scene be dismissed. Consumed by the
+    /// receiver mounted at the menu bar label, which owns DismissWindowAction.
+    /// Dismissing an already-closed window is a no-op there, so callers only
+    /// need best-effort knowledge of visibility.
+    func requestClose() {
+        closeRevision &+= 1
     }
 
     /// Returns the latest row while its handoff lease is active. Reading does not
