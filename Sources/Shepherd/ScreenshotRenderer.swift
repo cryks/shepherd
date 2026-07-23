@@ -1,19 +1,22 @@
 // Headless rendering of the README screenshots. Runs only when launched as
 // `Shepherd --render-screenshots <dir>`: it assembles the real MenuPanel with a
 // mock FleetStore, writes it out as PNGs, then exits the process. It depends on
-// no real herdr, SSH, or UserDefaults configuration and never shows a window on
-// screen, so a dev machine and CI produce the same image (only font rendering
-// differs by OS version).
+// no real herdr or SSH and never shows a window on screen, so a dev machine
+// and CI produce the same image (only font rendering differs by OS version).
 //
 // Data is pinned through the same injection points as the tests: the local and
-// remote Stores are given .ready(AgentSnapshot) directly, and the tunnel is a
-// stub that always reports ready. FleetStore.start() is never called, so no
-// poll or RPC runs.
+// remote Stores poll a scripted session.snapshot and read scripted terminal
+// screens, and the tunnel is a stub that always reports ready. FleetStore
+// runs the real polling and excerpt-extraction pipeline against those
+// fixtures, and rendering waits until every row's excerpt is published, so
+// the image shows what the extractor actually produces.
 //
 // The README has English and Japanese editions, so we toggle LanguageSetting
 // and write two images: menu-panel.png (English) and menu-panel-ja.png
-// (Japanese). Output PNGs are 2x the logical size; the README pins the width to
-// the logical size so edges stay crisp on Retina displays.
+// (Japanese). The terminal fixtures are agent output, not UI copy, so the
+// excerpts stay identical across the two variants. Output PNGs are 2x the
+// logical size; the README pins the width to the logical size so edges stay
+// crisp on Retina displays.
 
 import AppKit
 import SwiftUI
@@ -49,11 +52,19 @@ enum ScreenshotRenderer {
             fatalError("出力ディレクトリ作成失敗: \(directory.path) \(error)")
         }
 
-        // Pin the local heading (This Mac / この Mac) to the default wording so
-        // display settings left in the running environment's UserDefaults don't
-        // leak into the image.
+        // Pin display settings so values left in the running environment's
+        // UserDefaults don't leak into the image: the local heading keeps its
+        // default wording, and the excerpt display — off by default while
+        // experimental — is on because the screenshots feature it.
         LocalSectionTitleSetting.shared.style = .standard
+        ExcerptSetting.shared.isEnabled = true
         let store = makeStore()
+        store.start()
+        waitForExcerpts(store, paneIDs: [
+            SourcePaneID(sourceID: .local, paneID: "local:1"),
+            SourcePaneID(sourceID: .local, paneID: "local:2"),
+            SourcePaneID(sourceID: Fixtures.remoteID, paneID: "remote:1"),
+        ])
         let variants: [(language: AppLanguage, filename: String)] = [
             (.english, "menu-panel.png"),
             (.japanese, "menu-panel-ja.png"),
@@ -65,11 +76,37 @@ enum ScreenshotRenderer {
                 to: directory.appendingPathComponent(variant.filename)
             )
         }
+        store.stop()
+    }
+
+    /// Spins the RunLoop until every listed row has a published excerpt. The
+    /// scripted reads resolve within a few ticks (the settled remote pane
+    /// needs its 125ms verification read); a miss means a fixture no longer
+    /// matches the extractor, and failing loudly beats shipping a screenshot
+    /// with a Loading placeholder.
+    private static func waitForExcerpts(
+        _ store: FleetStore,
+        paneIDs: [SourcePaneID]
+    ) {
+        let deadline = Date(timeIntervalSinceNow: 10)
+        while Date() < deadline {
+            let allAvailable = paneIDs.allSatisfy { paneID in
+                if case .available? = store.agentExcerptState(for: paneID) {
+                    return true
+                }
+                return false
+            }
+            if allAvailable { return }
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        }
+        fatalError("excerpt が時間内に出揃いませんでした")
     }
 
     /// Mock with 2 local workspaces + 1 remote host. The smallest configuration
     /// that fits, in a single image, the three states working / blocked / done,
-    /// two brand marks (claude, codex), branch display, and connection headings.
+    /// two brand marks (claude, codex), branch display, excerpts for a
+    /// streaming message, a permission question, and a completed reply, and
+    /// connection headings.
     private static func makeStore() -> FleetStore {
         let localSnapshot = AgentSnapshot(
             agents: [
@@ -96,10 +133,7 @@ enum ScreenshotRenderer {
                 Workspace(workspaceId: "ws-shepherd", label: "shepherd", number: 1),
                 Workspace(workspaceId: "ws-herdr", label: "herdr", number: 2),
             ],
-            branches: [
-                "ws-shepherd": "main",
-                "ws-herdr": "fix/pty-resize",
-            ]
+            branches: Fixtures.localBranches
         )
         let remoteSnapshot = AgentSnapshot(
             agents: [
@@ -116,20 +150,100 @@ enum ScreenshotRenderer {
             workspaces: [
                 Workspace(workspaceId: "ws-webapp", label: "webapp", number: 1)
             ],
-            branches: ["ws-webapp": "feature/checkout"]
+            branches: Fixtures.remoteBranches
         )
         let remote = RemoteSourceConfiguration(
-            id: .remote(uuid: UUID(uuidString: "9D2A7A80-0000-4000-8000-000000000001")!),
+            id: Fixtures.remoteID,
             label: "devbox",
             sshAlias: "devbox"
         )
         return FleetStore(
             repository: RemoteSourceRepository(load: { [remote] }, save: { _ in }),
-            localStore: Store(initialState: .ready(localSnapshot)),
+            localStore: endpointStore(
+                snapshot: localSnapshot,
+                branches: Fixtures.localBranches,
+                screens: [
+                    "local:1": Fixtures.claudeWorkingScreen,
+                    "local:2": Fixtures.codexApprovalScreen,
+                ]
+            ),
             tunnelFactory: { configuration in
                 StaticReadyTunnel(configuration: configuration)
             },
-            remoteStoreFactory: { _, _ in Store(initialState: .ready(remoteSnapshot)) }
+            remoteStoreFactory: { _, _ in
+                endpointStore(
+                    snapshot: remoteSnapshot,
+                    branches: Fixtures.remoteBranches,
+                    screens: ["remote:1": Fixtures.claudeCompletedScreen]
+                )
+            }
+        )
+    }
+
+    /// A Store whose snapshot poll and screen reads answer from fixtures. The
+    /// long poll interval keeps the initial fetch as the only one during
+    /// rendering; the excerpt reads it triggers run against `screens`.
+    private static func endpointStore(
+        snapshot: AgentSnapshot,
+        branches: [String: String],
+        screens: [String: String]
+    ) -> Store {
+        let serverSnapshot = HerdrSessionSnapshot(
+            version: "screenshot",
+            protocolVersion: Herdr.supportedProtocol,
+            agents: Array(snapshot.panes.values),
+            workspaces: Array(snapshot.workspaces.values)
+        )
+        let worktrees = WorktreeListResult(
+            worktrees: branches.map { workspaceID, branch in
+                WorktreeEntry(branch: branch, openWorkspaceId: workspaceID)
+            }
+        )
+        let info: [String: AgentGetResult] = snapshot.panes.mapValues { pane in
+            AgentGetResult(agent: HerdrAgentInfo(
+                agent: pane.agent,
+                agentStatus: pane.agentStatus,
+                paneId: pane.paneId,
+                workspaceId: pane.workspaceId,
+                tabId: "tab-\(pane.paneId)",
+                terminalId: pane.terminalId ?? pane.paneId,
+                revision: 1,
+                stateChangeSeq: 1,
+                agentSession: nil
+            ))
+        }
+        let reads: [String: AgentReadResult] = snapshot.panes.mapValues { pane in
+            AgentReadResult(read: PaneRead(
+                paneId: pane.paneId,
+                workspaceId: pane.workspaceId,
+                tabId: "tab-\(pane.paneId)",
+                source: .visible,
+                format: .text,
+                text: screens[pane.paneId] ?? "",
+                revision: 1,
+                truncated: false
+            ))
+        }
+        return Store(
+            dataSource: StoreDataSource(
+                snapshot: { serverSnapshot },
+                worktrees: { _ in worktrees }
+            ),
+            agentReadDataSource: AgentReadDataSource(
+                get: { target in
+                    guard let result = info[target] else {
+                        throw ScreenshotFixtureError.unknownPane(target)
+                    }
+                    return result
+                },
+                readVisible: { target in
+                    guard let result = reads[target] else {
+                        throw ScreenshotFixtureError.unknownPane(target)
+                    }
+                    return result
+                }
+            ),
+            pollInterval: .seconds(60)
         )
     }
 
@@ -177,6 +291,70 @@ enum ScreenshotRenderer {
             fatalError("PNG 出力失敗: \(url.path) \(error)")
         }
     }
+}
+
+private enum ScreenshotFixtureError: Error {
+    case unknownPane(String)
+}
+
+/// Snapshot and terminal fixtures shared between the two language variants.
+/// The screens reproduce only the UI structure each extractor parses; the
+/// prose is invented for the shot.
+private enum Fixtures {
+    static let remoteID = HerdrSourceID.remote(
+        uuid: UUID(uuidString: "9D2A7A80-0000-4000-8000-000000000001")!
+    )
+
+    static let localBranches = [
+        "ws-shepherd": "main",
+        "ws-herdr": "fix/pty-resize",
+    ]
+
+    static let remoteBranches = ["ws-webapp": "feature/checkout"]
+
+    /// Claude mid-turn: the newest prose block becomes the excerpt while the
+    /// spinner keeps running.
+    static let claudeWorkingScreen = """
+    ⏺ Bash(swift test --filter TunnelRetry)
+      ⎿ All tests passed
+
+    ⏺ Backoff now caps at 30s; adding jitter to the reconnect
+      path next.
+
+    ✻ Simmering… (42s · ↓ 3.1k tokens)
+
+    ────────────────────────────────────────────────────────
+    ❯
+    ────────────────────────────────────────────────────────
+      ? for shortcuts
+    """
+
+    /// Codex approval form: the question above the choices becomes the
+    /// excerpt while the pane is blocked.
+    static let codexApprovalScreen = """
+      Would you like to run the following command?
+
+      $ swift test
+
+    › 1. Yes, proceed (y)
+      2. No, and tell Codex what to do differently (esc)
+
+      Press enter to confirm or esc to cancel
+    """
+
+    /// Claude after a completed turn: the final reply becomes the excerpt.
+    static let claudeCompletedScreen = """
+    ⏺ Bash(swift test --filter PaymentFlow)
+      ⎿ All tests passed
+
+    ⏺ All 42 payment flow tests pass; checkout retry edge
+      cases are covered.
+
+    ────────────────────────────────────────────────────────
+    ❯
+    ────────────────────────────────────────────────────────
+      ? for shortcuts
+    """
 }
 
 /// Composition for the shot: MenuPanel placed on a panel-like surface. The real
