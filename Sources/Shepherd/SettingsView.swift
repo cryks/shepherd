@@ -52,6 +52,7 @@ private struct GeneralSettingsView: View {
     @Bindable private var excerpts = ExcerptSetting.shared
     @AppStorage(colorAgentIconsKey) private var colorAgentIcons = false
     @AppStorage(MenuBarIconPresentation.blinkEnabledKey) private var blinkMenuBarIcon = true
+    @FocusState private var isLocalTitleFieldFocused: Bool
 
     var body: some View {
         Form {
@@ -87,6 +88,7 @@ private struct GeneralSettingsView: View {
                         text: $localTitle.customTitle,
                         prompt: Text(LocalSectionTitleSetting.defaultTitle)
                     )
+                    .focused($isLocalTitleFieldFocused)
                 } else if localTitle.style == .hidden {
                     Text(tr(
                         "With remotes, agents on this Mac are listed without a section title.",
@@ -142,6 +144,19 @@ private struct GeneralSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear {
+            // When the window is ordered front, AppKit makes the first editable
+            // text field (the custom section-title field) the initial first
+            // responder, which opens the pane with that field focused and its
+            // text selected. SwiftUI's defaultFocus modifier cannot prevent
+            // this: in a Settings scene it is ignored outright (verified on
+            // macOS 26 with a probe app; even redirecting to another field has
+            // no effect), and FocusState offers no "focus nothing" value at
+            // window bringup. The responder assignment happens in the same
+            // runloop turn as ordering the window front, so clearing one turn
+            // later undoes it without racing it.
+            DispatchQueue.main.async { isLocalTitleFieldFocused = false }
+        }
     }
 
     /// Shepherd keeps the app preference ON after denial. This row exposes the
