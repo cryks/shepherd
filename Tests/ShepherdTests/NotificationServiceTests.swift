@@ -287,6 +287,7 @@ final class NotificationServiceTests: XCTestCase {
     private func makeNotice(id: String) -> AttentionNotice {
         AttentionNotice(
             id: AttentionNotificationID(rawValue: id),
+            sourcePaneID: SourcePaneID(sourceID: .local, paneID: "w1:p1"),
             threadIdentifier: "source:remote-alpha",
             title: "🔴 Fix authentication",
             subtitle: "Build Mac · shepherd",

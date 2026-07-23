@@ -181,10 +181,11 @@ final class SystemUserNotificationCenterClient: UserNotificationCenterClient {
 /// Delivers AttentionMonitor effects through macOS Notification Center.
 ///
 /// `deliver(_:)` is intentionally transition-agnostic: adding the same request ID
-/// replaces and alerts again, so AttentionMonitor decides when a blocked/done
-/// transition warrants a call. Removal always targets both pending and delivered
-/// collections so an immediate add racing with a state resolution cannot leave a
-/// stale notification behind.
+/// replaces and alerts again, so the attention pipeline (AttentionMonitor and
+/// the excerpt-holding AttentionNoticeStager between it and this class) decides
+/// when a blocked/done transition warrants a call. Removal always targets both
+/// pending and delivered collections so an immediate add racing with a state
+/// resolution cannot leave a stale notification behind.
 @MainActor
 final class AgentNotificationCenter {
     /// Prefix scopes startup cleanup to notifications owned by this feature.

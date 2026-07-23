@@ -90,8 +90,8 @@ private struct GeneralSettingsView: View {
                 isOn: $excerpts.isEnabled
             )
             Text(tr(
-                "Reads each Codex and Claude Code terminal in the background and shows the agent's latest message in the list.",
-                ja: "Codex と Claude Code のターミナルをバックグラウンドで読み取り、エージェントの最新のメッセージを一覧に表示します。"
+                "Reads each Codex and Claude Code terminal in the background and shows the agent's latest message in the list and in notifications.",
+                ja: "Codex と Claude Code のターミナルをバックグラウンドで読み取り、エージェントの最新のメッセージを一覧と通知に表示します。"
             ))
             .font(.caption)
             .foregroundStyle(.secondary)

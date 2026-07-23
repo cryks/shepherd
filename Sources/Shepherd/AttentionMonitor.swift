@@ -56,9 +56,14 @@ struct AttentionAgentLocator: Hashable, Sendable {
 
 /// Platform-neutral notification request. Status is represented by the title's
 /// colored glyph, so neither the delivery layer nor localized status text is part
-/// of this contract.
+/// of this contract. sourcePaneID names the agent pane observed at the
+/// transition; AttentionNoticeStager uses it to look up that pane's current
+/// excerpt before the notice reaches Notification Center. It is not persisted
+/// into the notification payload, and click routing keeps resolving the current
+/// pane through AttentionMonitor.destination(for:).
 struct AttentionNotice: Equatable, Sendable {
     let id: AttentionNotificationID
+    let sourcePaneID: SourcePaneID
     let threadIdentifier: String
     let title: String
     let subtitle: String
@@ -66,12 +71,14 @@ struct AttentionNotice: Equatable, Sendable {
 
     init(
         id: AttentionNotificationID,
+        sourcePaneID: SourcePaneID,
         threadIdentifier: String,
         title: String,
         subtitle: String,
         body: String
     ) {
         self.id = id
+        self.sourcePaneID = sourcePaneID
         self.threadIdentifier = threadIdentifier
         self.title = title
         self.subtitle = subtitle
@@ -529,6 +536,10 @@ struct AttentionStateMachine {
             .joined(separator: " · ")
         return AttentionNotice(
             id: id,
+            sourcePaneID: SourcePaneID(
+                sourceID: sourceID,
+                paneID: agent.pane.paneId
+            ),
             threadIdentifier: Self.threadIdentifier(sourceID: sourceID),
             title: "\(statusGlyph) \(agent.pane.displayTitle)",
             subtitle: subtitle,
