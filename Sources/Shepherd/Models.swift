@@ -49,11 +49,22 @@ struct Pane: Codable, Identifiable, Equatable {
 
     var id: String { paneId }
 
-    /// Text for the main row in lists (menu, monitor window).
+    /// While Codex waits for input it retitles its terminal to
+    /// "[ ! ] Action Required | <task>", blinking the bracketed glyph between
+    /// "!" and ".". herdr's stripped title keeps that decoration; Shepherd
+    /// already shows the blocked state through status icons and notifications,
+    /// so display drops the prefix and keeps only the task part.
+    private static let codexActionRequiredPrefix = #/^\[ . \] Action Required \| /#
+
+    /// Text for the main row in lists (menu, monitor window) and for
+    /// notification titles.
     /// While the work title is empty (e.g. right after the agent starts), the
     /// agent name fills in.
     var displayTitle: String {
-        if let title = terminalTitleStripped, !title.isEmpty { return title }
+        if var title = terminalTitleStripped, !title.isEmpty {
+            title.replace(Self.codexActionRequiredPrefix, with: "")
+            if !title.isEmpty { return title }
+        }
         return agent ?? "?"
     }
 
