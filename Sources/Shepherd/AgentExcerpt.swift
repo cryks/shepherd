@@ -449,11 +449,15 @@ enum ExcerptText {
     }
 
     /// Extracts the question from the lines between a form boundary and its
-    /// first choice. Prefers the last paragraph ending in "?" (half- or
-    /// full-width), then a paragraph introduced by a "Question N/M" header
-    /// (the region can reach back to the top of the screen when the form has
-    /// no leading rule, so the header pins the right paragraph), then the
-    /// region's first paragraph as its title.
+    /// first choice. Selection is positional, not lexical: a question prompt
+    /// is free-form text with no required punctuation, so no candidate is
+    /// preferred for containing "?". A paragraph introduced by a
+    /// "Question N/M" header wins — the region can reach back to the top of
+    /// the screen when the form has no leading rule, and the header pins the
+    /// question below any earlier prose. Otherwise the question (or the
+    /// form's title) is the last paragraph before the choices; every
+    /// supported form renders it in that position, while command lines,
+    /// metadata blocks, and the tab strip never become candidates.
     private static func question(in lines: ArraySlice<String>) -> String? {
         var candidates: [String] = []
         var headerCandidates: [String] = []
@@ -490,30 +494,31 @@ enum ExcerptText {
                 followsQuestionHeader = true
                 continue
             }
-            // "☐"/"☑" lines are Claude's per-question tab titles, not the
-            // question text itself.
             guard !isSkippingMetadataBlock,
                   !isHorizontalRule(value),
                   !value.hasPrefix("$"),
                   !value.hasPrefix("›"),
                   !value.hasPrefix("❯"),
-                  !value.hasPrefix("☐"),
-                  !value.hasPrefix("☑") else {
+                  !isQuestionTabStrip(value) else {
                 continue
             }
             paragraph.append(value)
         }
         closeParagraph()
 
-        if let question = candidates.last(where: {
-            $0.hasSuffix("?") || $0.hasSuffix("？")
-        }) {
-            return question
-        }
         if let question = headerCandidates.last {
             return question
         }
-        return candidates.first
+        return candidates.last
+    }
+
+    /// Claude's question forms draw a tab strip above the question text: one
+    /// "☐"/"☑" title per question plus a "✔ Submit" tab, wrapped in "←"/"→"
+    /// scroll arrows when the strip overflows the pane width. The strip is
+    /// navigation chrome and must not become the extracted question.
+    private static func isQuestionTabStrip(_ value: String) -> Bool {
+        let stripped = value.drop { $0 == "←" || $0 == " " }
+        return ["☐", "☑", "✔"].contains { stripped.hasPrefix($0) }
     }
 
     private static func isNavigationHint(_ line: String) -> Bool {

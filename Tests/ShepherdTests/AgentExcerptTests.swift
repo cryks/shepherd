@@ -162,6 +162,24 @@ final class CodexAgentExcerptTests: XCTestCase {
         )
     }
 
+    func testStatementQuestionIgnoresQuestionMarkInEarlierProse() throws {
+        var machine = try makeMachine("codex")
+
+        XCTAssertEqual(
+            machine.ingest(input(
+                .blocked,
+                38,
+                Fixtures.codexStatementQuestion
+            )),
+            .replace(excerpt(
+                "次に試す方向を選んでね",
+                kind: .attention,
+                confidence: .high,
+                revision: 38
+            ))
+        )
+    }
+
     func testSettledReplacementRequiresTwoStableReads() throws {
         var machine = try makeMachine("codex")
         _ = machine.ingest(input(.working, 20, Fixtures.codexWorking))
@@ -760,6 +778,42 @@ final class ClaudeAgentExcerptTests: XCTestCase {
         )
     }
 
+    func testStatementQuestionPublishesByFormPosition() throws {
+        var machine = try makeMachine("claude")
+
+        XCTAssertEqual(
+            machine.ingest(input(
+                .blocked,
+                92,
+                Fixtures.claudeStatementQuestion
+            )),
+            .replace(excerpt(
+                "今日の気分に近いものを選んでね",
+                kind: .attention,
+                confidence: .high,
+                revision: 92
+            ))
+        )
+    }
+
+    func testMultiSelectQuestionFormPublishesItsQuestion() throws {
+        var machine = try makeMachine("claude")
+
+        XCTAssertEqual(
+            machine.ingest(input(
+                .blocked,
+                91,
+                Fixtures.claudeMultiSelectQuestion
+            )),
+            .replace(excerpt(
+                "今日の気分に近いのどれ？（複数選択できるよ）",
+                kind: .attention,
+                confidence: .high,
+                revision: 91
+            ))
+        )
+    }
+
     func testQuestionFormWithPreviewPanePublishesItsQuestion() throws {
         var machine = try makeMachine("claude")
 
@@ -1320,6 +1374,21 @@ private enum Fixtures {
       tab to add notes | enter to submit answer | esc to interrupt
     """
 
+    // A statement question below prose that happens to contain "?": the
+    // "Question N/M" header and the form position select the question, not
+    // the question mark.
+    static let codexStatementQuestion = """
+    • まずは前の結果を見てほしいな? と思ったけど先に聞くね。
+
+      Question 1/1 (1 unanswered)
+      次に試す方向を選んでね
+
+        1. リトライ      同じ入力でもう一度実行するよ。
+      › 2. ログ調査      失敗の原因を先に調べるよ。
+
+      tab to add notes | enter to submit answer | esc to interrupt
+    """
+
     static let claudeWorking = """
     ⏺ Read(Sources/App/Preview.swift)
       ⎿ Read 80 lines
@@ -1428,6 +1497,50 @@ private enum Fixtures {
       2. Option B
          A short description of option B
       3. Type something.
+    ────────────────────────────────────────────────────────
+      4. Chat about this
+
+    Enter to select · ↑/↓ to navigate · Esc to cancel
+    """
+
+    // Models a question whose prompt is a statement without any question
+    // mark: only its position directly above the choices identifies it.
+    static let claudeStatementQuestion = """
+    ⏺ 気分を教えてもらうね
+
+    ────────────────────────────────────────────────────────
+     ☐ 今の気分
+
+    今日の気分に近いものを選んでね
+
+    ❯ 1. [ ] 集中したい
+      作業をゴリゴリ進めたい気分だよ
+      2. [ ] まったりしたい
+      少しペース落として進めたい気分だよ
+    ────────────────────────────────────────────────────────
+      3. Chat about this
+
+    Enter to select · ↑/↓ to navigate · Esc to cancel
+    """
+
+    // Models a multi-select AskUserQuestion form: the tab strip is wrapped in
+    // "←"/"→" scroll arrows and carries a "✔ Submit" tab, the question ends
+    // with a parenthetical after its full-width "？", and every choice has a
+    // "[ ]" checkbox between its number and label.
+    static let claudeMultiSelectQuestion = """
+    ⏺ じゃあ今度はちょっと違うパターンで試してみるね uwu
+
+    ────────────────────────────────────────────────────────
+    ←  ☐ 今の気分  ✔ Submit  →
+
+    今日の気分に近いのどれ？（複数選択できるよ）
+
+    ❯ 1. [ ] 集中できてすごい
+      作業をゴリゴリ進めたい気分だよ
+      2. [ ] まったりしたい
+      少しペース落として進めたい気分だよ
+      3. [ ] Type something
+         Submit
     ────────────────────────────────────────────────────────
       4. Chat about this
 
