@@ -3,9 +3,13 @@
 // session.snapshot. Reads run in the background for every supported pane so
 // the excerpt cache is already filled when a menu or Monitor surface opens:
 // a pane is read when its snapshot status differs from the last scheduled
-// read's status, then re-read at readInterval while it stays working or
-// blocked. Every read is reduced immediately to an AgentExcerptState; raw
+// read's status, then re-read at the policy's interval while it stays working
+// or blocked. Every read is reduced immediately to an AgentExcerptState; raw
 // terminal text is never retained.
+//
+// The excerpt preference is consulted through the injected policy closure on
+// every snapshot tick rather than through a push API: a disabled tick cancels
+// in-flight reads and drops the cache, and the next enabled tick rebuilds it.
 //
 // A screen observation is bracketed by agent.get -> agent.read -> agent.get.
 // Publication requires the same pane, terminal, canonical agent, native
@@ -20,6 +24,15 @@
 
 import Foundation
 import Observation
+
+/// Read behavior derived from the excerpt preference for one snapshot tick.
+struct AgentReadPolicy {
+    /// false stops all reads and drops the excerpt cache.
+    var isEnabled: Bool
+    /// Background re-read cadence for a pane whose status stays working or
+    /// blocked; a status change reads without waiting for it.
+    var readInterval: Duration
+}
 
 @Observable @MainActor
 final class AgentReadMonitor {
@@ -80,24 +93,28 @@ final class AgentReadMonitor {
 
     @ObservationIgnored private let dataSource: AgentReadDataSource
     @ObservationIgnored private let verificationDelay: Duration
-    @ObservationIgnored private let readInterval: Duration
+    @ObservationIgnored private let policy: @MainActor () -> AgentReadPolicy
     @ObservationIgnored private var records: [RecordKey: Record] = [:]
     @ObservationIgnored private var latestPanes: [Pane] = []
     @ObservationIgnored private var epoch: UInt64 = 0
     @ObservationIgnored private var isSuspended = false
     @ObservationIgnored private var hasStopped = false
 
-    /// `readInterval` is the background re-read cadence for a pane whose
-    /// status stays working or blocked; a status change reads without waiting
-    /// for it.
+    /// The default policy follows the app-wide excerpt preference; tests
+    /// inject a closure to pin enablement and cadence without UserDefaults.
     init(
         dataSource: AgentReadDataSource,
         verificationDelay: Duration = .milliseconds(125),
-        readInterval: Duration = .seconds(10)
+        policy: @escaping @MainActor () -> AgentReadPolicy = {
+            AgentReadPolicy(
+                isEnabled: ExcerptSetting.shared.isEnabled,
+                readInterval: ExcerptSetting.shared.readInterval.duration
+            )
+        }
     ) {
         self.dataSource = dataSource
         self.verificationDelay = verificationDelay
-        self.readInterval = readInterval
+        self.policy = policy
     }
 
     /// Reconciles the monitor with one successful endpoint snapshot.
@@ -114,6 +131,12 @@ final class AgentReadMonitor {
             return AgentExcerptMachine.supports(agentID: agentID)
         }
         guard !isSuspended, !hasStopped else { return }
+        guard policy().isEnabled else {
+            if !records.isEmpty || !excerptStates.isEmpty {
+                reset(clearLatestPanes: false)
+            }
+            return
+        }
         reconcile()
     }
 
@@ -218,6 +241,7 @@ final class AgentReadMonitor {
             return
         }
         guard status == .working || status == .blocked else { return }
+        let readInterval = policy().readInterval
         let hasIntervalElapsed = record.lastReadStart.map {
             $0.duration(to: ContinuousClock().now) >= readInterval
         } ?? true

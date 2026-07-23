@@ -445,7 +445,9 @@ final class AgentReadMonitorTests: XCTestCase {
                 text: TerminalScreens.codexWorking
             ),
         ])
-        let monitor = makeMonitor(script, readInterval: .seconds(3600))
+        let monitor = makeMonitor(script, policy: {
+            AgentReadPolicy(isEnabled: true, readInterval: .seconds(3600))
+        })
         defer { monitor.stop() }
 
         monitor.update(panes: [pane(status: .working, revision: 25)])
@@ -485,7 +487,9 @@ final class AgentReadMonitorTests: XCTestCase {
         let monitor = makeMonitor(
             script,
             verificationDelay: .zero,
-            readInterval: .seconds(3600)
+            policy: {
+                AgentReadPolicy(isEnabled: true, readInterval: .seconds(3600))
+            }
         )
         defer { monitor.stop() }
 
@@ -506,6 +510,56 @@ final class AgentReadMonitorTests: XCTestCase {
         )
         let readCallCount = await script.readCallCount()
         XCTAssertEqual(readCallCount, 3)
+    }
+
+    @MainActor
+    func testDisabledPolicyMakesNoReadCalls() async {
+        let script = ScriptedAgentReads([])
+        let monitor = makeMonitor(script, policy: {
+            AgentReadPolicy(isEnabled: false, readInterval: .zero)
+        })
+        defer { monitor.stop() }
+
+        monitor.update(panes: [pane(status: .working, revision: 10)])
+        await drainMainActor()
+
+        let calls = await script.recordedCalls()
+        XCTAssertEqual(calls, [])
+        XCTAssertEqual(monitor.excerptState(for: paneID), .loading)
+    }
+
+    @MainActor
+    func testDisablingPolicyDropsTheCacheOnTheNextSnapshot() async {
+        let policyBox = PolicyBox(
+            AgentReadPolicy(isEnabled: true, readInterval: .zero)
+        )
+        let script = ScriptedAgentReads([
+            transaction(
+                status: .working,
+                revision: 11,
+                text: TerminalScreens.codexWorking
+            ),
+        ])
+        let monitor = makeMonitor(script, policy: { policyBox.policy })
+        defer { monitor.stop() }
+
+        monitor.update(panes: [pane(status: .working, revision: 11)])
+        let published = await waitUntil {
+            monitor.excerpt(for: self.paneID) != nil
+        }
+        XCTAssertTrue(published)
+
+        policyBox.policy.isEnabled = false
+        monitor.update(panes: [pane(status: .working, revision: 11)])
+
+        XCTAssertNil(monitor.excerpt(for: paneID))
+        XCTAssertEqual(monitor.excerptState(for: paneID), .loading)
+        let readCallCount = await script.readCallCount()
+        XCTAssertEqual(
+            readCallCount,
+            1,
+            "a disabled snapshot tick issued a terminal-content read"
+        )
     }
 
     @MainActor
@@ -679,14 +733,16 @@ final class AgentReadMonitorTests: XCTestCase {
         XCTAssertEqual(readCallCount, 2)
     }
 
-    /// readInterval defaults to zero so scripted tests keep the historical
-    /// read-per-snapshot behavior; cadence tests pass an hour to observe the
-    /// suppression side.
+    /// The policy defaults to enabled with a zero interval so scripted tests
+    /// keep the read-per-snapshot behavior; cadence tests pass an hour to
+    /// observe the suppression side, and preference tests flip enablement.
     @MainActor
     private func makeMonitor(
         _ script: ScriptedAgentReads,
         verificationDelay: Duration = .zero,
-        readInterval: Duration = .zero
+        policy: @escaping @MainActor () -> AgentReadPolicy = {
+            AgentReadPolicy(isEnabled: true, readInterval: .zero)
+        }
     ) -> AgentReadMonitor {
         AgentReadMonitor(
             dataSource: AgentReadDataSource(
@@ -698,7 +754,7 @@ final class AgentReadMonitorTests: XCTestCase {
                 }
             ),
             verificationDelay: verificationDelay,
-            readInterval: readInterval
+            policy: policy
         )
     }
 
@@ -883,6 +939,17 @@ final class AgentReadMonitorTests: XCTestCase {
         for _ in 0..<20 {
             await Task<Never, Never>.yield()
         }
+    }
+}
+
+/// Mutable policy holder for tests that flip the excerpt preference between
+/// snapshot ticks.
+@MainActor
+private final class PolicyBox {
+    var policy: AgentReadPolicy
+
+    init(_ policy: AgentReadPolicy) {
+        self.policy = policy
     }
 }
 

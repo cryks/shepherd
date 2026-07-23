@@ -49,6 +49,7 @@ private struct GeneralSettingsView: View {
     @Bindable var updater: UpdaterModel
     @Bindable private var language = LanguageSetting.shared
     @Bindable private var localTitle = LocalSectionTitleSetting.shared
+    @Bindable private var excerpts = ExcerptSetting.shared
     @AppStorage(colorAgentIconsKey) private var colorAgentIcons = false
     @AppStorage(MenuBarIconPresentation.blinkEnabledKey) private var blinkMenuBarIcon = true
 
@@ -81,6 +82,28 @@ private struct GeneralSettingsView: View {
             if showsNotificationSystemWarning {
                 notificationSystemWarning
             }
+            Toggle(
+                tr(
+                    "Show excerpts (experimental)",
+                    ja: "抜粋を表示（試験機能）"
+                ),
+                isOn: $excerpts.isEnabled
+            )
+            Text(tr(
+                "Reads each Codex and Claude Code terminal in the background and shows the agent's latest message in the list.",
+                ja: "Codex と Claude Code のターミナルをバックグラウンドで読み取り、エージェントの最新のメッセージを一覧に表示します。"
+            ))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            Picker(
+                tr("Excerpt refresh interval", ja: "抜粋の取得間隔"),
+                selection: $excerpts.readInterval
+            ) {
+                ForEach(ExcerptReadInterval.allCases) { interval in
+                    Text(interval.displayName).tag(interval)
+                }
+            }
+            .disabled(!excerpts.isEnabled)
             Picker(
                 tr("This Mac label with remotes", ja: "リモート存在時のローカル表記"),
                 selection: $localTitle.style

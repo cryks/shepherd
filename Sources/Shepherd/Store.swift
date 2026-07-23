@@ -29,9 +29,10 @@
 //     suspend cancels the poll and in-flight RPCs and does not reflect their
 //     results into state. resume fetches once immediately, then restarts polling
 //   - AgentReadMonitor is a separate projection fed by every successful
-//     snapshot. It reads screens in the background (on status changes and at
-//     its own cadence while a pane works) so the excerpt cache is ready before
-//     any UI surface opens, without delaying snapshot or branch publication
+//     snapshot. While the excerpt preference is on, it reads screens in the
+//     background (on status changes and at the preference's cadence while a
+//     pane works) so the excerpt cache is ready before any UI surface opens,
+//     without delaying snapshot or branch publication
 //
 // No read/unread tracking is kept. blocked/done are herdr-side states; viewing the
 // pane in herdr turns done back to idle, and this app's display clears on the next

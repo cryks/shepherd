@@ -35,6 +35,10 @@ final class FleetStoreTests: XCTestCase {
 
     @MainActor
     func testUnsupportedAgentHasNoExcerptRowState() {
+        let originalExcerptsEnabled = ExcerptSetting.shared.isEnabled
+        ExcerptSetting.shared.isEnabled = true
+        defer { ExcerptSetting.shared.isEnabled = originalExcerptsEnabled }
+
         let paneID = "local:unsupported"
         let snapshot = AgentSnapshot(
             agents: [
@@ -65,7 +69,35 @@ final class FleetStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testExcerptRowStateIsNilWhileThePreferenceIsOff() {
+        let originalExcerptsEnabled = ExcerptSetting.shared.isEnabled
+        ExcerptSetting.shared.isEnabled = false
+        defer { ExcerptSetting.shared.isEnabled = originalExcerptsEnabled }
+
+        let paneID = "local:p1"
+        let fleet = FleetStore(
+            repository: RemoteSourceRepository(load: { [] }, save: { _ in }),
+            localStore: Store(
+                initialState: .ready(snapshot(status: .working, paneID: paneID))
+            )
+        )
+        defer { fleet.stop() }
+
+        XCTAssertNil(
+            fleet.agentExcerptState(for: SourcePaneID(
+                sourceID: .local,
+                paneID: paneID
+            )),
+            "a supported pane exposed excerpt row state while the preference is off"
+        )
+    }
+
+    @MainActor
     func testExcerptReadsRunInBackgroundWithoutUISurfaces() async {
+        let originalExcerptsEnabled = ExcerptSetting.shared.isEnabled
+        ExcerptSetting.shared.isEnabled = true
+        defer { ExcerptSetting.shared.isEnabled = originalExcerptsEnabled }
+
         let paneID = "local:p1"
         let sourcePaneID = SourcePaneID(sourceID: .local, paneID: paneID)
         let screen = """
@@ -176,6 +208,10 @@ final class FleetStoreTests: XCTestCase {
 
     @MainActor
     func testRemoteContentWaitsForTunnelReadyAndClearsOnDisconnect() async {
+        let originalExcerptsEnabled = ExcerptSetting.shared.isEnabled
+        ExcerptSetting.shared.isEnabled = true
+        defer { ExcerptSetting.shared.isEnabled = originalExcerptsEnabled }
+
         let remote = remoteConfiguration(index: 12, enabled: true)
         let paneID = "remote:p1"
         let sourcePaneID = SourcePaneID(sourceID: remote.id, paneID: paneID)
@@ -288,6 +324,10 @@ final class FleetStoreTests: XCTestCase {
 
     @MainActor
     func testReplacementSourceRuntimeServesItsOwnExcerpt() async throws {
+        let originalExcerptsEnabled = ExcerptSetting.shared.isEnabled
+        ExcerptSetting.shared.isEnabled = true
+        defer { ExcerptSetting.shared.isEnabled = originalExcerptsEnabled }
+
         let remote = remoteConfiguration(index: 13, enabled: true)
         let paneID = "remote:p1"
         let sourcePaneID = SourcePaneID(sourceID: remote.id, paneID: paneID)

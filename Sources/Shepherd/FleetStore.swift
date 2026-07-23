@@ -710,12 +710,14 @@ final class FleetStore {
         return excerpt
     }
 
-    /// Loading state for one ready Codex or Claude pane. nil means the current
-    /// row has no supported terminal grammar and must keep its two-line layout.
-    /// A supported pane returns loading until its first background read
-    /// completes, so MenuPanel reserves the third line in its first layout.
+    /// Loading state for one ready Codex or Claude pane. nil means the excerpt
+    /// preference is off or the current row has no supported terminal grammar,
+    /// and the row must keep its two-line layout. A supported pane returns
+    /// loading until its first background read completes, so MenuPanel
+    /// reserves the third line in its first layout.
     func agentExcerptState(for paneID: SourcePaneID) -> AgentExcerptState? {
-        guard let source = monitoredSource(id: paneID.sourceID),
+        guard ExcerptSetting.shared.isEnabled,
+              let source = monitoredSource(id: paneID.sourceID),
               source.state == .ready,
               let pane = source.store.panes[paneID.paneID],
               isAgentContentSupported(pane) else {
