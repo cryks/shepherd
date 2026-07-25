@@ -8,9 +8,10 @@
 // ProxyJump, and key selection are resolved by `/usr/bin/ssh` from
 // `~/.ssh/config` and ssh-agent.
 //
-// Each tab sizes itself. The frame belongs on the tab's root view rather than on
-// the TabView, which is what lets the Settings window resize as the selection
-// changes; the window adds 88pt of vertical chrome and none horizontally.
+// SettingsWindowSizer owns the window's size, not SwiftUI: a TabView asks for
+// the width its widest tab needs (the Display pane's split, around 900pt) no
+// matter which tab is selected, so the compact tabs would open far too wide.
+// The window adds 88pt of vertical chrome and none horizontally.
 
 import SwiftUI
 
@@ -125,18 +126,36 @@ private struct SettingsWindowSizer: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> NSView { NSView() }
+    /// Reports the window it is added to. AppKit sets a view's window before
+    /// the window is ordered front, so this is where the first size lands:
+    /// applied any later, the window is already on screen at the size SwiftUI
+    /// gave it, and the correction reads as a flash.
+    final class SizerView: NSView {
+        var onAttachToWindow: ((NSWindow) -> Void)?
 
-    func updateNSView(_ view: NSView, context: Context) {
-        let tab = tab
-        let coordinator = context.coordinator
-        // The window is not reachable while SwiftUI is still attaching the
-        // view, and updateNSView must not mutate state during an update pass.
-        DispatchQueue.main.async { apply(tab, to: view.window, coordinator) }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window else { return }
+            onAttachToWindow?(window)
+        }
     }
 
-    private func apply(_ tab: SettingsTab, to window: NSWindow?, _ coordinator: Coordinator) {
-        guard let window, coordinator.appliedTab != tab else { return }
+    func makeNSView(context: Context) -> SizerView { SizerView() }
+
+    func updateNSView(_ view: SizerView, context: Context) {
+        let tab = tab
+        let coordinator = context.coordinator
+        // This pass runs before SwiftUI attaches the view, so the handler is
+        // what sizes the window on the first open; from then on the window is
+        // reachable here and a tab change goes through the animating path.
+        view.onAttachToWindow = { window in apply(tab, to: window, coordinator) }
+        guard let window = view.window else { return }
+        // updateNSView must not mutate state during an update pass.
+        DispatchQueue.main.async { apply(tab, to: window, coordinator) }
+    }
+
+    private func apply(_ tab: SettingsTab, to window: NSWindow, _ coordinator: Coordinator) {
+        guard coordinator.appliedTab != tab else { return }
         // Sizes are measured and applied as deltas against contentLayoutRect,
         // the area below the tab toolbar. The frameRect/contentRect conversions
         // are styleMask-based and leave the toolbar out, so a frame computed
@@ -157,13 +176,15 @@ private struct SettingsWindowSizer: NSViewRepresentable {
         var frame = window.frame
         frame.size.width += target.width - current.width
         frame.size.height += target.height - current.height
-        // The top edge stays put; frame origin is the bottom-left corner.
-        frame.origin.y -= target.height - current.height
 
         guard animatesFromPreviousTab else {
-            window.setFrame(frame, display: true)
+            // The first size is set while the window is off screen and before
+            // AppKit has placed it, so only the size is ours to set here.
+            window.setFrame(frame, display: false)
             return
         }
+        // The top edge stays put; frame origin is the bottom-left corner.
+        frame.origin.y -= target.height - current.height
         NSAnimationContext.runAnimationGroup { animation in
             animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             window.animator().setFrame(frame, display: true)
