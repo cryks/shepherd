@@ -12,4 +12,6 @@ reconstructing it from git log later.
   existing sections.
 - One sentence per entry, saying what changed. Reasoning, mechanism, and
   implementation history belong in the commit message body.
+- Cut what the reader can see for themselves: which control to drag,
+  which parts of the screen changed, what the feature obviously implies.
 - Leave out internal refactors, tests, CI, and documentation-only changes.

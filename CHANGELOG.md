@@ -4,23 +4,23 @@
 
 ### Added
 
-- The update dialog shows the release notes for the version it offers.
+- The update dialog shows release notes.
 
 ### Fixed
 
-- The working status text and its ○ mark no longer wash out in light mode.
+- The working status no longer washes out in light mode.
 
 ## v0.13.0 - 2026-07-25
 
 ### Added
 
-- Editable templates for agent rows and notification text, with a new Display settings tab.
+- A Display settings tab with editable templates for agent rows and notifications.
 - Global hotkeys for the menu bar panel and the pop-out window.
 
 ### Changed
 
-- Reorder display lines and remote hosts by dragging a row's grabber.
+- Drag to reorder display lines and remote hosts.
 
 ### Fixed
 
-- The settings window no longer flashes at a wider size on first open.
+- The settings window no longer flashes wider on first open.
