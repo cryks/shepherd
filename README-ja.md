@@ -49,6 +49,52 @@ brew install cryks/tap/shepherd
 defaults write io.github.cryks.shepherd TerminalBundleID <バンドル ID>
 ```
 
+## 行の表示を変える
+
+設定の「表示」タブで、エージェント 1 件の表示内容を決められます。
+表示は何行でも増やせて、各行の左側と右側をそれぞれテンプレートとして書きます。
+
+| 記法 | 意味 |
+|---|---|
+| `{name}` | 変数。定義のない名前は何も出ません。 |
+| `{a\|b}` | 値のある方を先に採用します。 |
+| `[…]` | 中の変数がすべて空なら、区切り文字ごと消えます。 |
+
+herdr が報告する値は、herdr の綴りのまま `herdr.` 以下で参照できます。
+
+```
+{herdr.agent.terminal_title_stripped}   {herdr.agent.cwd}
+{herdr.agent.agent}                     {herdr.agent.agent_status}
+{herdr.workspace.label}                 {herdr.workspace.branch}
+{herdr.workspace.worktree.repo_name}    {herdr.tab.label}
+```
+
+`herdr pane report-metadata` で自分の hook から送った値も同じ名前空間に入ります。
+`{herdr.agent.tokens.model}` や `{herdr.workspace.tokens.jj_status}`、表示用の `{herdr.agent.title}`・`{herdr.agent.display_agent}`・`{herdr.agent.state_labels.working}` などです。
+
+残りは Shepherd 側の変数です。
+
+| 変数 | 値 |
+|---|---|
+| `{title}` | スピナーと Codex の `[ ! ] Action Required \|` を除いたターミナルタイトル |
+| `{cwd_short}` | ホームを `~` にした作業ディレクトリ |
+| `{cwd_name}` | 作業ディレクトリの末尾 |
+| `{excerpt}` | 抜粋を有効にしているときの、エージェントの最新メッセージ |
+| `{source}` | この Mac またはリモート名。リモートが表示されていない間は空 |
+| `{agent_icon}` | ブランドマーク |
+| `{status_emoji}` | 🔴 blocked / 🟢 done / 🟡 working / ⚪ idle |
+
+既定の行は次のとおりです。
+
+| 行 | 左 | 右 |
+|---|---|---|
+| 1 | `{title\|herdr.agent.agent}` | `{herdr.agent.agent_status}` |
+| 2 | `{agent_icon\|herdr.agent.agent}[ {herdr.workspace.branch}]` | |
+| 3 | `{excerpt}` | |
+
+エージェント別の設定を作ると、そのエージェントの行はまるごと差し替わります。
+通知の title・subtitle・body も同じテンプレートで書けます。ただし `{excerpt}` と `{agent_icon}` は何も出ません。
+
 ## ポップアウトウィンドウ
 
 一覧を表示したままにしたいときは、メニューの「ウィンドウとしてポップアウト」を選びます。
@@ -67,6 +113,7 @@ defaults write io.github.cryks.shepherd TerminalBundleID <バンドル ID>
 ## 設定
 
 - ログイン時に起動
+- 行と通知の表示内容の変更 (エージェント別の指定も可)
 - エージェントアイコンをカラーで表示 (既定はモノクロ)
 - 対応が必要なときにメニューバーアイコンを点滅
 - agent に対応が必要なときに macOS 通知を送信 (既定は OFF)

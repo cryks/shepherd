@@ -8,8 +8,9 @@
 // The same section column is rendered two ways via Style:
 // - menu: NSMenu-style, laying rows directly on the panel surface. Headers use
 //   headline, and remote headers carry a monitoring ON/OFF checkbox (when OFF,
-//   the checkbox conveys the state, so no body is drawn). Supported rows reserve
-//   a third line for Loading or a display-safe Excerpt.
+//   the checkbox conveys the state, so no body is drawn). Rows here reserve the
+//   height of the line that reads {excerpt}, keeping the panel from resizing
+//   when one arrives.
 // - window: settings-app style, floating each section body above the window
 //   background as a rounded card. No checkbox; monitoring OFF is shown as a
 //   single line inside the card. This presentation forwards cross-source
@@ -33,7 +34,16 @@ struct SourceList: View {
 
     let sections: [FleetSourceSection]
     let style: Style
+    /// FleetStore.showsSourceLabels: true while at least one remote is visible.
+    /// A local-only list drops every header, since a header then distinguishes
+    /// nothing; with remotes present each section's headerTitle is honored (only
+    /// the local hidden setting returns nil). The same flag suppresses {source}
+    /// in templates, so a row and its notification never disagree.
+    let showsSourceLabels: Bool
     let highlightedPaneID: SourcePaneID?
+    /// Template values for one row. nil for a pane that left its endpoint's
+    /// snapshot between this list being built and the row being drawn.
+    let rowContext: (SourcePaneID) -> AgentRowContext?
     let excerptState: ((SourcePaneID) -> AgentExcerptState?)?
     let onRemoteEnabledChange: ((HerdrSourceID, Bool) -> Void)?
     let onLocalFocus: (Pane) -> Void
@@ -41,6 +51,8 @@ struct SourceList: View {
     init(
         sections: [FleetSourceSection],
         style: Style,
+        showsSourceLabels: Bool,
+        rowContext: @escaping (SourcePaneID) -> AgentRowContext?,
         highlightedPaneID: SourcePaneID? = nil,
         excerptState: ((SourcePaneID) -> AgentExcerptState?)? = nil,
         onRemoteEnabledChange: ((HerdrSourceID, Bool) -> Void)? = nil,
@@ -48,18 +60,12 @@ struct SourceList: View {
     ) {
         self.sections = sections
         self.style = style
+        self.showsSourceLabels = showsSourceLabels
+        self.rowContext = rowContext
         self.highlightedPaneID = highlightedPaneID
         self.excerptState = excerptState
         self.onRemoteEnabledChange = onRemoteEnabledChange
         self.onLocalFocus = onLocalFocus
-    }
-
-    /// Header visibility: a list with no remote sections is local-only, so the
-    /// header serves no purpose in distinguishing endpoints and is omitted. When
-    /// remotes exist, each section's headerTitle is honored (only the local
-    /// hidden setting returns nil).
-    private var hasRemoteSections: Bool {
-        sections.contains(where: \.isRemote)
     }
 
     var body: some View {
@@ -78,12 +84,13 @@ struct SourceList: View {
         // spacing 16 combines with the trailing row's 3pt bottom to make 19pt —
         // one step wider than the workspace header separation (11pt), so an
         // endpoint boundary reads stronger than a workspace boundary.
-        let showsFirstHeader = hasRemoteSections && sections.first?.headerTitle != nil
+        let showsFirstHeader = showsSourceLabels && sections.first?.headerTitle != nil
         return VStack(alignment: .leading, spacing: 16) {
             ForEach(sections) { section in
                 MenuSourceSection(
                     section: section,
-                    headerTitle: hasRemoteSections ? section.headerTitle : nil,
+                    headerTitle: showsSourceLabels ? section.headerTitle : nil,
+                    rowContext: rowContext,
                     excerptState: excerptState,
                     onRemoteEnabledChange: onRemoteEnabledChange,
                     onLocalFocus: onLocalFocus
@@ -109,8 +116,9 @@ struct SourceList: View {
             ForEach(sections) { section in
                 WindowSourceSection(
                     section: section,
-                    headerTitle: hasRemoteSections ? section.headerTitle : nil,
+                    headerTitle: showsSourceLabels ? section.headerTitle : nil,
                     highlightedPaneID: highlightedPaneID,
+                    rowContext: rowContext,
                     excerptState: excerptState,
                     onLocalFocus: onLocalFocus
                 )
@@ -129,6 +137,7 @@ private struct MenuSourceSection: View {
     /// one, or the local hidden setting). Remote sections put the checkbox in
     /// the header, so while remotes exist the caller always passes non-nil.
     let headerTitle: String?
+    let rowContext: (SourcePaneID) -> AgentRowContext?
     let excerptState: ((SourcePaneID) -> AgentExcerptState?)?
     let onRemoteEnabledChange: ((HerdrSourceID, Bool) -> Void)?
     let onLocalFocus: (Pane) -> Void
@@ -152,6 +161,7 @@ private struct MenuSourceSection: View {
                         sourceID: section.id,
                         groups: section.workspaceGroups,
                         hoverStyle: .menu,
+                        rowContext: rowContext,
                         excerptState: excerptState,
                         reservesExcerptLine: true,
                         onFocus: section.isRemote ? nil : onLocalFocus
@@ -221,6 +231,7 @@ private struct WindowSourceSection: View {
     /// Current cross-source row identity requested by notification navigation.
     /// It may belong to another section; AgentGroupList compares the full ID.
     let highlightedPaneID: SourcePaneID?
+    let rowContext: (SourcePaneID) -> AgentRowContext?
     let excerptState: ((SourcePaneID) -> AgentExcerptState?)?
     let onLocalFocus: (Pane) -> Void
 
@@ -247,6 +258,7 @@ private struct WindowSourceSection: View {
                             sourceID: section.id,
                             groups: section.workspaceGroups,
                             hoverStyle: .list,
+                            rowContext: rowContext,
                             highlightedPaneID: highlightedPaneID,
                             excerptState: excerptState,
                             onFocus: section.isRemote ? nil : onLocalFocus

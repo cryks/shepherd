@@ -2,6 +2,12 @@
 // Protocol 17 adds agent lifecycle fields while preserving the snapshot,
 // workspace, and pane fields below; unknown fields remain outside Shepherd's
 // model instead of being copied into display state.
+//
+// One session.snapshot response line feeds both decode passes: the typed models
+// through makeDecoder(), whose .convertFromSnakeCase gives them camelCase
+// properties, and HerdrRawSnapshot through a plain JSONDecoder, which is what
+// keeps `{herdr.agent.terminal_title_stripped}` and the hook-defined keys under
+// `tokens` addressable by the names herdr sent.
 
 import Darwin
 import Foundation
@@ -9,54 +15,80 @@ import XCTest
 @testable import Shepherd
 
 final class HerdrProtocolTests: XCTestCase {
-    func testDecodesProtocol17SessionSnapshotSubset() throws {
-        let json = Data(
-            #"""
-            {
-              "type": "session_snapshot",
-              "snapshot": {
-                "version": "0.7.5",
-                "protocol": 17,
-                "focused_workspace_id": "w1",
-                "focused_tab_id": "w1:t1",
-                "focused_pane_id": "w1:p1",
-                "workspaces": [
-                  {
-                    "workspace_id": "w1",
-                    "label": "Shepherd",
-                    "number": 1,
-                    "focused": true,
-                    "pane_count": 1,
-                    "tab_count": 1,
-                    "active_tab_id": "w1:t1",
-                    "agent_status": "blocked"
+    /// A `session.snapshot` response line as herdr writes it, including fields
+    /// no typed model reads (`tokens.jj_status`, `state_labels`) so the raw pass
+    /// has something the typed pass provably drops.
+    private static let sessionSnapshotResponseLine = Data(
+        #"""
+        {
+          "id": "snapshot-1",
+          "result": {
+            "type": "session_snapshot",
+            "snapshot": {
+              "version": "0.7.5",
+              "protocol": 17,
+              "focused_workspace_id": "w1",
+              "focused_tab_id": "w1:t1",
+              "focused_pane_id": "w1:p1",
+              "workspaces": [
+                {
+                  "workspace_id": "w1",
+                  "label": "Shepherd",
+                  "number": 1,
+                  "focused": true,
+                  "pane_count": 1,
+                  "tab_count": 1,
+                  "active_tab_id": "w1:t1",
+                  "agent_status": "blocked"
+                }
+              ],
+              "tabs": [
+                {
+                  "tab_id": "w1:t1",
+                  "workspace_id": "w1",
+                  "label": "agent",
+                  "number": 1,
+                  "active_pane_id": "w1:p1"
+                }
+              ],
+              "panes": [],
+              "layouts": [],
+              "agents": [
+                {
+                  "agent": "codex",
+                  "agent_status": "blocked",
+                  "pane_id": "w1:p1",
+                  "workspace_id": "w1",
+                  "tab_id": "w1:t1",
+                  "terminal_id": "terminal-1",
+                  "focused": true,
+                  "revision": 7,
+                  "terminal_title_stripped": "Implement protocol 17",
+                  "launch_pending": false,
+                  "interactive_ready": true,
+                  "state_change_seq": 42,
+                  "tokens": {
+                    "agent_kind": "primary",
+                    "jj_status": "conflict"
+                  },
+                  "state_labels": {
+                    "working": "Working",
+                    "blocked": "Waiting for you"
                   }
-                ],
-                "tabs": [],
-                "panes": [],
-                "layouts": [],
-                "agents": [
-                  {
-                    "agent": "codex",
-                    "agent_status": "blocked",
-                    "pane_id": "w1:p1",
-                    "workspace_id": "w1",
-                    "tab_id": "w1:t1",
-                    "terminal_id": "terminal-1",
-                    "focused": true,
-                    "revision": 7,
-                    "terminal_title_stripped": "Implement protocol 17",
-                    "launch_pending": false,
-                    "interactive_ready": true,
-                    "state_change_seq": 42
-                  }
-                ]
-              }
+                }
+              ]
             }
-            """#.utf8
-        )
+          }
+        }
+        """#.utf8
+    )
 
-        let result = try makeDecoder().decode(SessionSnapshotResult.self, from: json)
+    func testDecodesProtocol17SessionSnapshotSubset() throws {
+        let response = try makeDecoder().decode(
+            RPCResponse<SessionSnapshotResult>.self,
+            from: Self.sessionSnapshotResponseLine
+        )
+        let result = try XCTUnwrap(response.result)
 
         XCTAssertEqual(Herdr.supportedProtocol, 17)
         XCTAssertEqual(result.snapshot.protocolVersion, Herdr.supportedProtocol)
@@ -65,6 +97,33 @@ final class HerdrProtocolTests: XCTestCase {
         XCTAssertEqual(result.snapshot.agents.first?.terminalId, "terminal-1")
         XCTAssertEqual(result.snapshot.agents.first?.revision, 7)
         XCTAssertEqual(result.snapshot.agents.first?.agentStatus, .blocked)
+        XCTAssertEqual(result.snapshot.agents.first?.tokens?.agentKind, "primary")
+    }
+
+    func testRawSnapshotIndexesRecordsByWireIDsAndKeepsKeysVerbatim() throws {
+        let raw = try HerdrRawSnapshot.decode(
+            responseLine: Self.sessionSnapshotResponseLine
+        )
+
+        XCTAssertEqual(Set(raw.agents.keys), ["w1:p1"])
+        XCTAssertEqual(Set(raw.workspaces.keys), ["w1"])
+        XCTAssertEqual(Set(raw.tabs.keys), ["w1:t1"])
+
+        let agent = try XCTUnwrap(raw.agents["w1:p1"])
+        XCTAssertEqual(
+            agent["terminal_title_stripped"]?.templateText,
+            "Implement protocol 17"
+        )
+        XCTAssertEqual(text(agent, "state_labels.blocked"), "Waiting for you")
+        XCTAssertEqual(text(agent, "tokens.jj_status"), "conflict")
+        // The camelCase spellings are what .convertFromSnakeCase would have
+        // produced. Their absence is what makes the raw pass worth running.
+        XCTAssertNil(agent["terminalTitleStripped"])
+        XCTAssertNil(agent.value(at: "stateLabels.blocked".split(separator: ".")))
+        XCTAssertNil(agent.value(at: "tokens.jjStatus".split(separator: ".")))
+
+        XCTAssertEqual(raw.workspaces["w1"]?["pane_count"]?.templateText, "1")
+        XCTAssertEqual(raw.tabs["w1:t1"]?["label"]?.templateText, "agent")
     }
 
     func testDecodesProtocol17AgentInfoWithNativeSessionIdentity() throws {
@@ -237,6 +296,11 @@ final class HerdrProtocolTests: XCTestCase {
         } catch {
             XCTFail("Could not decode agent.get request: \(error)", file: file, line: line)
         }
+    }
+
+    /// Value at a dotted path of a raw record, as a template would read it.
+    private func text(_ record: JSONValue, _ path: String) -> String? {
+        record.value(at: path.split(separator: "."))?.templateText
     }
 
     private func requestObject(_ data: Data) throws -> [String: Any] {

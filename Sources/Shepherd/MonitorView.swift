@@ -117,6 +117,8 @@ struct MonitorView: View {
                 SourceList(
                     sections: store.sourceSections,
                     style: .window,
+                    showsSourceLabels: store.showsSourceLabels,
+                    rowContext: store.rowContext(for:),
                     highlightedPaneID: highlightedPaneID,
                     excerptState: store.agentExcerptState(for:)
                 ) { pane in

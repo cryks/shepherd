@@ -5,6 +5,10 @@
 // remote socket. This layer does synchronous I/O on a background queue and
 // exposes an async API upward. read/write are capped at 10 seconds and a
 // response line at 4 MiB; it holds no UI state or poll cadence.
+//
+// The response line is also handed to the transform overload of request, so a
+// caller that needs the bytes makeDecoder() dropped or renamed can decode the
+// same line a second time instead of issuing another RPC.
 
 import Foundation
 
@@ -40,16 +44,39 @@ enum Herdr {
         socketPath: String = defaultSocketPath,
         as type: R.Type
     ) async throws -> R {
+        try await request(method, params: params, socketPath: socketPath, as: type) { result, _ in
+            result
+        }
+    }
+
+    /// One-shot RPC that also exposes the response line.
+    ///
+    /// `transform` runs on the background queue that performed the I/O, with the
+    /// result decoded through makeDecoder() and the whole response line as it
+    /// arrived (LF excluded). Errors it throws propagate to the caller
+    /// unchanged, as do RPCError from an error line, HerdrClientError from the
+    /// socket, and DecodingError from the envelope.
+    static func request<R: Codable, T>(
+        _ method: String,
+        params: [String: Any] = [:],
+        socketPath: String = defaultSocketPath,
+        as type: R.Type,
+        transform: @escaping (_ result: R, _ responseLine: Data) throws -> T
+    ) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    continuation.resume(
-                        returning: try requestSync(
-                            method,
-                            params: params,
-                            socketPath: socketPath
-                        )
+                    let line = try requestSync(
+                        method,
+                        params: params,
+                        socketPath: socketPath
                     )
+                    let response = try makeDecoder().decode(RPCResponse<R>.self, from: line)
+                    if let error = response.error { throw error }
+                    guard let result = response.result else {
+                        throw HerdrClientError.emptyResult
+                    }
+                    continuation.resume(returning: try transform(result, line))
                 } catch {
                     continuation.resume(throwing: error)
                 }
@@ -57,11 +84,12 @@ enum Herdr {
         }
     }
 
-    private static func requestSync<R: Codable>(
+    /// Writes one request line and returns the response line, LF excluded.
+    private static func requestSync(
         _ method: String,
         params: [String: Any],
         socketPath: String
-    ) throws -> R {
+    ) throws -> Data {
         let fd = try connectSocket(path: socketPath, ioTimeout: 10)
         defer { close(fd) }
 
@@ -77,10 +105,7 @@ enum Herdr {
         guard let line = try LineReader(fd: fd, maximumLineBytes: 4 * 1024 * 1024).readLine() else {
             throw HerdrClientError.connectionClosed
         }
-        let response = try makeDecoder().decode(RPCResponse<R>.self, from: line)
-        if let error = response.error { throw error }
-        guard let result = response.result else { throw HerdrClientError.emptyResult }
-        return result
+        return line
     }
 }
 

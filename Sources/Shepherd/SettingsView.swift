@@ -1,18 +1,23 @@
-// UI for the Settings scene. General settings, remote monitoring targets, and
-// global hotkeys are separated into tabs. General owns only bindings to
-// app-wide preferences;
+// UI for the Settings scene. General settings, row and notification templates,
+// remote monitoring targets, and global hotkeys are separated into tabs. General
+// owns only bindings to app-wide preferences;
 // notification authorization and cleanup stay in NotificationSettingsCoordinator
 // because toggling that preference has operating-system side effects. Remote
 // editing passes only values that passed RemoteSourceConfiguration validation to
 // FleetStore, and no SSH passwords or private keys are stored. Authentication,
 // ProxyJump, and key selection are resolved by `/usr/bin/ssh` from
 // `~/.ssh/config` and ssh-agent.
+//
+// Each tab sizes itself. The frame belongs on the tab's root view rather than on
+// the TabView, which is what lets the Settings window resize as the selection
+// changes; the window adds 88pt of vertical chrome and none horizontally.
 
 import SwiftUI
 
 /// UserDefaults key for whether agent brand marks are shown in color.
-/// SettingsView writes it and AgentRow reads it. Both reference it via
-/// @AppStorage, so toggling is reflected immediately in the rows currently on screen.
+/// The Display settings tab writes it and AgentRow reads it. Both reference it
+/// via @AppStorage, so toggling is reflected immediately in the rows currently
+/// on screen.
 let colorAgentIconsKey = "ColorAgentIcons"
 
 struct SettingsView: View {
@@ -20,8 +25,10 @@ struct SettingsView: View {
     @Bindable var notificationSettings: NotificationSettingsCoordinator
     @Bindable var updater: UpdaterModel
 
+    @State private var selectedTab: SettingsTab = .general
+
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             GeneralSettingsView(
                 store: store,
                 notificationSettings: notificationSettings,
@@ -30,21 +37,136 @@ struct SettingsView: View {
                 .tabItem {
                     Label(tr("General", ja: "一般"), systemImage: "gearshape")
                 }
+                .tag(SettingsTab.general)
+
+            DisplaySettingsView(store: store)
+                .tabItem {
+                    Label(tr("Display", ja: "表示"), systemImage: "text.alignleft")
+                }
+                .tag(SettingsTab.display)
 
             RemoteSourcesSettingsView(store: store)
                 .tabItem {
                     Label(tr("Remotes", ja: "リモート"), systemImage: "network")
                 }
+                .tag(SettingsTab.remotes)
 
             HotkeySettingsView()
                 .tabItem {
                     Label(tr("Hotkeys", ja: "ホットキー"), systemImage: "keyboard")
                 }
+                .tag(SettingsTab.hotkeys)
         }
-        .frame(width: 520, height: 500)
+        // A constant, flexible frame: SettingsWindowSizer owns the window's
+        // size, and SwiftUI would fight it if the content's own sizing changed
+        // per tab. The floor is the compact tabs' layout size; the Display tab
+        // clips below its split's minimum, which the sizer's per-tab floor
+        // prevents from persisting.
+        .frame(
+            minWidth: SettingsTab.compactSize.width,
+            idealWidth: SettingsTab.compactSize.width,
+            maxWidth: .infinity,
+            minHeight: SettingsTab.compactSize.height,
+            idealHeight: SettingsTab.compactSize.height,
+            maxHeight: .infinity
+        )
+        .background(SettingsWindowSizer(tab: selectedTab))
         .task {
             updater.refresh()
             await notificationSettings.refresh()
+        }
+    }
+}
+
+/// The settings tabs, each with the content size it opens at. The window
+/// animates between these sizes as tabs are selected; a size the reader drags
+/// the window to is remembered per tab for the session.
+enum SettingsTab: Hashable {
+    case general
+    case display
+    case remotes
+    case hotkeys
+
+    /// Layout size the three form tabs are written against.
+    static let compactSize = CGSize(width: 520, height: 500)
+
+    var defaultSize: CGSize {
+        switch self {
+        case .display: CGSize(width: 820, height: 560)
+        case .general, .remotes, .hotkeys: Self.compactSize
+        }
+    }
+
+    /// Floor while this tab is selected. Display's is the width below which its
+    /// editor-plus-preview split starts clipping its columns.
+    var minimumSize: CGSize {
+        switch self {
+        case .display: CGSize(width: 760, height: 520)
+        case .general, .remotes, .hotkeys: Self.compactSize
+        }
+    }
+}
+
+/// Drives the settings window's frame from the selected tab: on a tab change
+/// the window animates to that tab's remembered or default size, keeping its
+/// top-left corner still, and takes the tab's floor as its minimum content
+/// size. SwiftUI is kept out of window sizing entirely (the content's own
+/// sizing never changes), because its instant resize on tab selection is what
+/// this animation replaces.
+private struct SettingsWindowSizer: NSViewRepresentable {
+    let tab: SettingsTab
+
+    final class Coordinator {
+        var appliedTab: SettingsTab?
+        /// Content size each tab was last seen at, so a reader's resize
+        /// survives leaving and revisiting the tab within one app run.
+        var rememberedSizes: [SettingsTab: CGSize] = [:]
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        let tab = tab
+        let coordinator = context.coordinator
+        // The window is not reachable while SwiftUI is still attaching the
+        // view, and updateNSView must not mutate state during an update pass.
+        DispatchQueue.main.async { apply(tab, to: view.window, coordinator) }
+    }
+
+    private func apply(_ tab: SettingsTab, to window: NSWindow?, _ coordinator: Coordinator) {
+        guard let window, coordinator.appliedTab != tab else { return }
+        // Sizes are measured and applied as deltas against contentLayoutRect,
+        // the area below the tab toolbar. The frameRect/contentRect conversions
+        // are styleMask-based and leave the toolbar out, so a frame computed
+        // through them comes up a toolbar short and clips the pane's bottom.
+        let current = window.contentLayoutRect.size
+        if let previous = coordinator.appliedTab {
+            coordinator.rememberedSizes[previous] = current
+        }
+        let animatesFromPreviousTab = coordinator.appliedTab != nil
+        coordinator.appliedTab = tab
+        window.contentMinSize = tab.minimumSize
+
+        var target = coordinator.rememberedSizes[tab] ?? tab.defaultSize
+        target.width = max(target.width, tab.minimumSize.width)
+        target.height = max(target.height, tab.minimumSize.height)
+        guard target != current else { return }
+
+        var frame = window.frame
+        frame.size.width += target.width - current.width
+        frame.size.height += target.height - current.height
+        // The top edge stays put; frame origin is the bottom-left corner.
+        frame.origin.y -= target.height - current.height
+
+        guard animatesFromPreviousTab else {
+            window.setFrame(frame, display: true)
+            return
+        }
+        NSAnimationContext.runAnimationGroup { animation in
+            animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            window.animator().setFrame(frame, display: true)
         }
     }
 }
@@ -56,7 +178,6 @@ private struct GeneralSettingsView: View {
     @Bindable private var language = LanguageSetting.shared
     @Bindable private var localTitle = LocalSectionTitleSetting.shared
     @Bindable private var excerpts = ExcerptSetting.shared
-    @AppStorage(colorAgentIconsKey) private var colorAgentIcons = false
     @AppStorage(MenuBarIconPresentation.blinkEnabledKey) private var blinkMenuBarIcon = true
     @FocusState private var isLocalTitleFieldFocused: Bool
 
@@ -75,11 +196,7 @@ private struct GeneralSettingsView: View {
                 )
             }
 
-            Section(tr("Appearance", ja: "表示")) {
-                Toggle(
-                    tr("Show agent icons in color", ja: "エージェントアイコンをカラーで表示"),
-                    isOn: $colorAgentIcons
-                )
+            Section(tr("Source list", ja: "ソース一覧")) {
                 Picker(
                     tr("This Mac label with remotes", ja: "リモート存在時のローカル表記"),
                     selection: $localTitle.style

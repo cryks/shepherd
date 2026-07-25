@@ -701,6 +701,38 @@ final class FleetStore {
         activeSources.first { $0.id == id }
     }
 
+    /// True when at least one remote section is visible, which is when source
+    /// labels carry information. SourceList headings, notification subtitles and
+    /// the {source} template variable all read this.
+    var showsSourceLabels: Bool {
+        remoteConfigurations.contains(where: \.isVisible)
+    }
+
+    /// Everything one row needs to resolve template variables, or nil when the
+    /// pane is not in its endpoint's current snapshot — the endpoint dropped
+    /// between the list being built and a row being drawn.
+    func rowContext(for paneID: SourcePaneID) -> AgentRowContext? {
+        guard let source = monitoredSource(id: paneID.sourceID),
+              let pane = source.store.panes[paneID.paneID] else { return nil }
+        let raw = source.store.rawRecords(forPane: paneID.paneID)
+        return AgentRowContext(
+            pane: pane,
+            rawAgent: raw.agent,
+            rawWorkspace: raw.workspace,
+            rawTab: raw.tab,
+            excerpt: agentExcerpt(for: paneID)?.text,
+            sourceLabel: sourceLabel(of: source)
+        )
+    }
+
+    /// Label naming one endpoint in rows and notifications. nil while source
+    /// labels are suppressed, and for local while its label is set to hidden.
+    private func sourceLabel(of source: MonitoredSource) -> String? {
+        guard showsSourceLabels else { return nil }
+        if let configuration = source.configuration { return configuration.displayName }
+        return LocalSectionTitleSetting.shared.localTitleWithRemotes
+    }
+
     /// Display-safe Excerpt for one currently ready source pane.
     func agentExcerpt(for paneID: SourcePaneID) -> AgentExcerpt? {
         guard let state = agentExcerptState(for: paneID),
@@ -711,10 +743,10 @@ final class FleetStore {
     }
 
     /// Loading state for one ready Codex or Claude pane. nil means the excerpt
-    /// preference is off or the current row has no supported terminal grammar,
-    /// and the row must keep its two-line layout. A supported pane returns
-    /// loading until its first background read completes, so MenuPanel
-    /// reserves the third line in its first layout.
+    /// preference is off or the pane has no supported terminal grammar;
+    /// `{excerpt}` then resolves empty and no line reserves height for it. A
+    /// supported pane returns loading until its first background read
+    /// completes, so the menu reserves that line in its first layout.
     func agentExcerptState(for paneID: SourcePaneID) -> AgentExcerptState? {
         guard ExcerptSetting.shared.isEnabled,
               let source = monitoredSource(id: paneID.sourceID),

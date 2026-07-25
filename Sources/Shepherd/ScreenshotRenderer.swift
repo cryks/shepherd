@@ -54,9 +54,12 @@ enum ScreenshotRenderer {
 
         // Pin display settings so values left in the running environment's
         // UserDefaults don't leak into the image: the local heading keeps its
-        // default wording, and the excerpt display — off by default while
-        // experimental — is on because the screenshots feature it.
+        // default wording, the rows and notifications follow the built-in
+        // templates rather than a layout edited on this machine, and the
+        // excerpt display — off by default while experimental — is on because
+        // the screenshots feature it.
         LocalSectionTitleSetting.shared.style = .standard
+        RowLayoutSetting.shared.layout = .default
         ExcerptSetting.shared.isEnabled = true
         let store = makeStore()
         store.start()
@@ -108,49 +111,55 @@ enum ScreenshotRenderer {
     /// streaming message, a permission question, and a completed reply, and
     /// connection headings.
     private static func makeStore() -> FleetStore {
+        let localPanes = [
+            Pane(
+                agent: "claude",
+                agentStatus: .working,
+                paneId: "local:1",
+                workspaceId: "ws-shepherd",
+                terminalId: "term-1",
+                terminalTitleStripped: "Refactor tunnel retry backoff",
+                tokens: nil
+            ),
+            Pane(
+                agent: "codex",
+                agentStatus: .blocked,
+                paneId: "local:2",
+                workspaceId: "ws-herdr",
+                terminalId: "term-2",
+                terminalTitleStripped: "Approve: run swift test",
+                tokens: nil
+            ),
+        ]
+        let localWorkspaces = [
+            Workspace(workspaceId: "ws-shepherd", label: "shepherd", number: 1),
+            Workspace(workspaceId: "ws-herdr", label: "herdr", number: 2),
+        ]
         let localSnapshot = AgentSnapshot(
-            agents: [
-                Pane(
-                    agent: "claude",
-                    agentStatus: .working,
-                    paneId: "local:1",
-                    workspaceId: "ws-shepherd",
-                    terminalId: "term-1",
-                    terminalTitleStripped: "Refactor tunnel retry backoff",
-                    tokens: nil
-                ),
-                Pane(
-                    agent: "codex",
-                    agentStatus: .blocked,
-                    paneId: "local:2",
-                    workspaceId: "ws-herdr",
-                    terminalId: "term-2",
-                    terminalTitleStripped: "Approve: run swift test",
-                    tokens: nil
-                ),
-            ],
-            workspaces: [
-                Workspace(workspaceId: "ws-shepherd", label: "shepherd", number: 1),
-                Workspace(workspaceId: "ws-herdr", label: "herdr", number: 2),
-            ],
-            branches: Fixtures.localBranches
+            agents: localPanes,
+            workspaces: localWorkspaces,
+            branches: Fixtures.localBranches,
+            raw: rawSnapshot(agents: localPanes, workspaces: localWorkspaces)
         )
+        let remotePanes = [
+            Pane(
+                agent: "claude",
+                agentStatus: .done,
+                paneId: "remote:1",
+                workspaceId: "ws-webapp",
+                terminalId: "term-3",
+                terminalTitleStripped: "Add payment flow integration tests",
+                tokens: nil
+            )
+        ]
+        let remoteWorkspaces = [
+            Workspace(workspaceId: "ws-webapp", label: "webapp", number: 1)
+        ]
         let remoteSnapshot = AgentSnapshot(
-            agents: [
-                Pane(
-                    agent: "claude",
-                    agentStatus: .done,
-                    paneId: "remote:1",
-                    workspaceId: "ws-webapp",
-                    terminalId: "term-3",
-                    terminalTitleStripped: "Add payment flow integration tests",
-                    tokens: nil
-                )
-            ],
-            workspaces: [
-                Workspace(workspaceId: "ws-webapp", label: "webapp", number: 1)
-            ],
-            branches: Fixtures.remoteBranches
+            agents: remotePanes,
+            workspaces: remoteWorkspaces,
+            branches: Fixtures.remoteBranches,
+            raw: rawSnapshot(agents: remotePanes, workspaces: remoteWorkspaces)
         )
         let remote = RemoteSourceConfiguration(
             id: Fixtures.remoteID,
@@ -180,6 +189,50 @@ enum ScreenshotRenderer {
         )
     }
 
+    /// The herdr records the row and notification templates read, derived from
+    /// the same Pane and Workspace values the typed snapshot carries so the two
+    /// views of a fixture cannot drift apart. Only the fields the built-in
+    /// templates name are filled in; the branch is written into each workspace
+    /// record by AgentSnapshot from `branches`.
+    private static func rawSnapshot(
+        agents: [Pane],
+        workspaces: [Workspace]
+    ) -> HerdrRawSnapshot {
+        HerdrRawSnapshot(
+            agents: Dictionary(uniqueKeysWithValues: agents.map { pane in
+                (pane.paneId, JSONValue.object([
+                    "agent": pane.agent.map(JSONValue.string) ?? .null,
+                    "agent_status": .string(pane.agentStatus.rawValue),
+                    "pane_id": .string(pane.paneId),
+                    "workspace_id": .string(pane.workspaceId),
+                    "tab_id": .string(tabID(for: pane)),
+                    "terminal_id": pane.terminalId.map(JSONValue.string) ?? .null,
+                    "terminal_title_stripped":
+                        pane.terminalTitleStripped.map(JSONValue.string) ?? .null,
+                ]))
+            }),
+            workspaces: Dictionary(uniqueKeysWithValues: workspaces.map { workspace in
+                (workspace.workspaceId, JSONValue.object([
+                    "workspace_id": .string(workspace.workspaceId),
+                    "label": workspace.label.map(JSONValue.string) ?? .null,
+                    "number": .int(Int64(workspace.number)),
+                ]))
+            }),
+            tabs: Dictionary(uniqueKeysWithValues: agents.map { pane in
+                (tabID(for: pane), JSONValue.object([
+                    "tab_id": .string(tabID(for: pane)),
+                    "workspace_id": .string(pane.workspaceId),
+                ]))
+            })
+        )
+    }
+
+    /// The tab a fixture pane sits in. Every herdr pane belongs to a tab, and
+    /// the fixtures give each pane one of its own.
+    private static func tabID(for pane: Pane) -> String {
+        "tab-\(pane.paneId)"
+    }
+
     /// A Store whose snapshot poll and screen reads answer from fixtures. The
     /// long poll interval keeps the initial fetch as the only one during
     /// rendering; the excerpt reads it triggers run against `screens`.
@@ -188,11 +241,14 @@ enum ScreenshotRenderer {
         branches: [String: String],
         screens: [String: String]
     ) -> Store {
-        let serverSnapshot = HerdrSessionSnapshot(
-            version: "screenshot",
-            protocolVersion: Herdr.supportedProtocol,
-            agents: Array(snapshot.panes.values),
-            workspaces: Array(snapshot.workspaces.values)
+        let fetch = SnapshotFetch(
+            session: HerdrSessionSnapshot(
+                version: "screenshot",
+                protocolVersion: Herdr.supportedProtocol,
+                agents: Array(snapshot.panes.values),
+                workspaces: Array(snapshot.workspaces.values)
+            ),
+            raw: snapshot.raw
         )
         let worktrees = WorktreeListResult(
             worktrees: branches.map { workspaceID, branch in
@@ -205,7 +261,7 @@ enum ScreenshotRenderer {
                 agentStatus: pane.agentStatus,
                 paneId: pane.paneId,
                 workspaceId: pane.workspaceId,
-                tabId: "tab-\(pane.paneId)",
+                tabId: tabID(for: pane),
                 terminalId: pane.terminalId ?? pane.paneId,
                 revision: 1,
                 stateChangeSeq: 1,
@@ -216,7 +272,7 @@ enum ScreenshotRenderer {
             AgentReadResult(read: PaneRead(
                 paneId: pane.paneId,
                 workspaceId: pane.workspaceId,
-                tabId: "tab-\(pane.paneId)",
+                tabId: tabID(for: pane),
                 source: .visible,
                 format: .text,
                 text: screens[pane.paneId] ?? "",
@@ -226,7 +282,7 @@ enum ScreenshotRenderer {
         }
         return Store(
             dataSource: StoreDataSource(
-                snapshot: { serverSnapshot },
+                snapshot: { fetch },
                 worktrees: { _ in worktrees }
             ),
             agentReadDataSource: AgentReadDataSource(

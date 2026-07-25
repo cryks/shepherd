@@ -1,7 +1,13 @@
 // Verifies the display rule that merges panes of linked worktrees into the root
-// checkout's group, and the propagation of branch names fetched from worktree.list
-// into Panes. RPCs respond immediately via swapped-in closures and do not depend
-// on a real socket or the poll interval.
+// checkout's group, and the propagation of branch names fetched from
+// worktree.list into the workspace records that `{herdr.workspace.branch}`
+// reads. RPCs respond immediately via swapped-in closures and do not depend on a
+// real socket or the poll interval.
+//
+// At the Store level the branch is observed indirectly, through which workspaces
+// worktree.list is asked about: a workspace whose branch was recorded is not
+// queried again. The record the branch is written into is asserted directly on
+// AgentSnapshot, which owns that write.
 
 import Foundation
 import XCTest
@@ -75,8 +81,35 @@ final class WorktreeTests: XCTestCase {
 
     // MARK: - Branch name propagation
 
+    func testBranchをWorkspaceRecordへ書き込む() {
+        let snapshot = AgentSnapshot(
+            agents: [
+                makePane(id: "w1:p1", workspaceId: "w1"),
+                makePane(id: "w2:p1", workspaceId: "w2"),
+                makePane(id: "w3:p1", workspaceId: "w3"),
+            ],
+            workspaces: [
+                rootWorkspace(id: "w1", label: "shepherd", number: 1),
+                linkedWorkspace(id: "w2", label: "feature-x", number: 2),
+                Workspace(workspaceId: "w3", label: "notes", number: 3),
+            ],
+            branches: ["w1": "main", "w2": "feature/x"],
+            raw: rawSnapshot(
+                paneIDs: ["w1:p1", "w2:p1", "w3:p1"],
+                workspaceIDs: ["w1", "w2", "w3"]
+            )
+        )
+
+        XCTAssertEqual(snapshot.raw.workspaces["w1"]?["branch"]?.templateText, "main")
+        XCTAssertEqual(snapshot.raw.workspaces["w2"]?["branch"]?.templateText, "feature/x")
+        // Non-git workspaces, detached HEAD, and failed fetches contribute no
+        // entry, and the key stays absent rather than becoming an empty string,
+        // so `[ {herdr.workspace.branch}]` drops its separator too.
+        XCTAssertNil(snapshot.raw.workspaces["w3"]?["branch"])
+    }
+
     @MainActor
-    func testWorktreeListのBranchをRootとWorktreeの両Paneへ書き込む() async {
+    func testRepoごとに一度のWorktreeListで全Workspaceが解決する() async {
         let recorder = CallRecorder()
         let serverSnapshot = makeSnapshot(
             agents: [
@@ -107,16 +140,17 @@ final class WorktreeTests: XCTestCase {
         let ready = await becameReady(store)
         XCTAssertTrue(ready)
 
-        XCTAssertEqual(store.panes["w1:p1"]?.branch, "main")
-        XCTAssertEqual(store.panes["w2:p1"]?.branch, "feature/x")
-        // The response for w1 also resolves w2 in the same repo, so a single query suffices.
+        // The response for w1 also resolves w2 in the same repo, so a single
+        // query suffices. w2 being skipped is what proves its branch was taken
+        // from w1's response.
         XCTAssertEqual(recorder.workspaceIDs, ["w1"])
     }
 
     @MainActor
-    func testWorktreeMetadataの無いGitWorkspaceにもBranchを書き込む() async {
+    func testWorktreeMetadataの無いGitWorkspaceにも問い合わせる() async {
         // session.snapshot may omit worktree metadata even for a git repo workspace.
         // Confirms that queries are not filtered by the presence of metadata.
+        let recorder = CallRecorder()
         let serverSnapshot = makeSnapshot(
             agents: [makePane(id: "w4:p1", workspaceId: "w4")],
             workspaces: [Workspace(workspaceId: "w4", label: "signage", number: 4)]
@@ -124,8 +158,9 @@ final class WorktreeTests: XCTestCase {
         let store = Store(
             dataSource: StoreDataSource(
                 snapshot: { serverSnapshot },
-                worktrees: { _ in
-                    WorktreeListResult(worktrees: [
+                worktrees: { workspaceID in
+                    recorder.record(workspaceID)
+                    return WorktreeListResult(worktrees: [
                         WorktreeEntry(branch: "main", openWorkspaceId: "w4"),
                     ])
                 }
@@ -138,11 +173,11 @@ final class WorktreeTests: XCTestCase {
         let ready = await becameReady(store)
         XCTAssertTrue(ready)
 
-        XCTAssertEqual(store.panes["w4:p1"]?.branch, "main")
+        XCTAssertEqual(recorder.workspaceIDs, ["w4"])
     }
 
     @MainActor
-    func testWorktreeListの失敗ではReadyのままBranchなしで表示する() async {
+    func testWorktreeListの失敗ではReadyのままPaneを出し続ける() async {
         let serverSnapshot = makeSnapshot(
             agents: [makePane(id: "w2:p1", workspaceId: "w2")],
             workspaces: [linkedWorkspace(id: "w2", label: "feature-x", number: 2)]
@@ -160,9 +195,7 @@ final class WorktreeTests: XCTestCase {
         let ready = await becameReady(store)
         XCTAssertTrue(ready)
 
-        XCTAssertNil(store.panes["w2:p1"]?.branch)
-        // The fallback string for unmarked agents is also not filled with the cwd; it is just the agent name.
-        XCTAssertEqual(store.panes["w2:p1"]?.displaySubtitle, "claude")
+        XCTAssertNotNil(store.panes["w2:p1"])
     }
 
     @MainActor
@@ -206,15 +239,36 @@ final class WorktreeTests: XCTestCase {
 
     // MARK: - Helpers
 
+    /// A fetch carrying only the typed snapshot. The branch write is asserted on
+    /// AgentSnapshot directly, so the store-level tests need no raw records.
     private func makeSnapshot(
         agents: [Pane],
         workspaces: [Workspace]
-    ) -> HerdrSessionSnapshot {
-        HerdrSessionSnapshot(
-            version: "test",
-            protocolVersion: Herdr.supportedProtocol,
-            agents: agents,
-            workspaces: workspaces
+    ) -> SnapshotFetch {
+        SnapshotFetch(
+            session: HerdrSessionSnapshot(
+                version: "test",
+                protocolVersion: Herdr.supportedProtocol,
+                agents: agents,
+                workspaces: workspaces
+            )
+        )
+    }
+
+    /// herdr records carrying identity only. The branch write is the subject
+    /// under test, so no record starts out with one.
+    private func rawSnapshot(
+        paneIDs: [String],
+        workspaceIDs: [String]
+    ) -> HerdrRawSnapshot {
+        HerdrRawSnapshot(
+            agents: Dictionary(uniqueKeysWithValues: paneIDs.map { paneID in
+                (paneID, JSONValue.object(["pane_id": .string(paneID)]))
+            }),
+            workspaces: Dictionary(uniqueKeysWithValues: workspaceIDs.map { workspaceID in
+                (workspaceID, JSONValue.object(["workspace_id": .string(workspaceID)]))
+            }),
+            tabs: [:]
         )
     }
 

@@ -1,7 +1,8 @@
 // Exercises the platform-neutral attention reducer and its FleetStore Observation
 // adapter. Notification Center behavior is covered by the delivery-layer tests;
 // these tests pin which value effects are emitted and when a current click target
-// remains resolvable.
+// remains resolvable. Notice text reaches the reducer already rendered, so it is
+// fixture data here; the rendering itself runs through the adapter test.
 
 import Foundation
 import XCTest
@@ -20,8 +21,7 @@ final class AttentionMonitorTests: XCTestCase {
         let blocked = source(status: .blocked)
         let waitingRemote = unavailableSource(
             id: remoteID(1),
-            generation: replacementGeneration,
-            title: "Remote"
+            generation: replacementGeneration
         )
 
         XCTAssertEqual(
@@ -36,7 +36,6 @@ final class AttentionMonitorTests: XCTestCase {
         let readyRemote = source(
             id: remoteID(1),
             generation: replacementGeneration,
-            title: "Remote",
             status: .done
         )
         XCTAssertTrue(machine.ingest(fleet(blocked, readyRemote)).isEmpty)
@@ -45,56 +44,51 @@ final class AttentionMonitorTests: XCTestCase {
     func testAttentionTransitionsDeliverStableNoticeAndCurrentDestination() throws {
         var machine = AttentionStateMachine()
         let working = source(
-            title: "Laptop",
             status: .working,
             paneID: "w1:p1",
             terminalID: "terminal-1",
             taskTitle: "Implement alerts",
-            branch: "feature/alerts",
-            workspaceTitle: "Shepherd"
+            subtitle: "Laptop · Shepherd",
+            body: "codex · feature/alerts"
         )
         _ = machine.start(enabled: true, fleet: fleet(working))
 
         let blocked = source(
-            title: "Laptop",
             status: .blocked,
             paneID: "w1:p1",
             terminalID: "terminal-1",
             taskTitle: "Implement alerts",
-            branch: "feature/alerts",
-            workspaceTitle: "Shepherd"
+            subtitle: "Laptop · Shepherd",
+            body: "codex · feature/alerts"
         )
         let blockedNotice = try deliveredNotice(machine.ingest(fleet(blocked)))
-        XCTAssertEqual(blockedNotice.title, "🔴 Implement alerts")
+        XCTAssertEqual(blockedNotice.title, "Implement alerts")
         XCTAssertEqual(blockedNotice.subtitle, "Laptop · Shepherd")
         XCTAssertEqual(blockedNotice.body, "codex · feature/alerts")
         XCTAssertTrue(blockedNotice.id.rawValue.hasPrefix(AttentionNotificationID.managedPrefix))
 
         let done = source(
-            title: "Laptop",
             status: .done,
             paneID: "w1:p1",
             terminalID: "terminal-1",
             taskTitle: "Implement alerts",
-            branch: "feature/alerts",
-            workspaceTitle: "Shepherd"
+            subtitle: "Laptop · Shepherd",
+            body: "codex · feature/alerts"
         )
         let doneNotice = try deliveredNotice(machine.ingest(fleet(done)))
         XCTAssertEqual(doneNotice.id, blockedNotice.id)
-        XCTAssertEqual(doneNotice.title, "🟢 Implement alerts")
 
         let renamed = source(
-            title: "Laptop",
             status: .done,
             paneID: "w1:p1",
             terminalID: "terminal-1",
             taskTitle: "A newer title",
-            branch: "feature/alerts",
-            workspaceTitle: "Shepherd"
+            subtitle: "Laptop · Shepherd",
+            body: "codex · feature/alerts"
         )
         XCTAssertTrue(machine.ingest(fleet(renamed)).isEmpty)
         XCTAssertEqual(
-            machine.destination(for: doneNotice.id)?.pane.displayTitle,
+            machine.destination(for: doneNotice.id)?.pane.terminalTitleStripped,
             "A newer title"
         )
     }
@@ -289,34 +283,30 @@ final class AttentionMonitorTests: XCTestCase {
         XCTAssertTrue(machine.ingest(fleet(source(status: .done))).isEmpty)
     }
 
-    func testSourceRenameWaitsForNextTransitionAndHiddenLocalOmitsSource() throws {
+    /// Rendered text reaching the reducer is data, not a trigger: it changes
+    /// whenever a source is renamed or a template edited, and the banner it
+    /// produces is the one captured at the attention transition.
+    func testTextChangesAloneDeliverNothingAndTheNextTransitionCarriesThem() throws {
         var machine = AttentionStateMachine()
         _ = machine.start(
             enabled: true,
-            fleet: fleet(source(title: "Old", status: .working))
+            fleet: fleet(source(status: .working, subtitle: "Old · Workspace"))
         )
         let oldNotice = try deliveredNotice(
-            machine.ingest(fleet(source(title: "Old", status: .blocked)))
+            machine.ingest(fleet(source(status: .blocked, subtitle: "Old · Workspace")))
         )
         XCTAssertEqual(oldNotice.subtitle, "Old · Workspace")
 
         XCTAssertTrue(
-            machine.ingest(fleet(source(title: "New", status: .blocked))).isEmpty
+            machine.ingest(
+                fleet(source(status: .blocked, subtitle: "New · Workspace"))
+            ).isEmpty
         )
         let renamedNotice = try deliveredNotice(
-            machine.ingest(fleet(source(title: "New", status: .done)))
+            machine.ingest(fleet(source(status: .done, subtitle: "New · Workspace")))
         )
+        XCTAssertEqual(renamedNotice.id, oldNotice.id)
         XCTAssertEqual(renamedNotice.subtitle, "New · Workspace")
-
-        var hiddenMachine = AttentionStateMachine()
-        _ = hiddenMachine.start(
-            enabled: true,
-            fleet: fleet(source(title: nil, status: .working))
-        )
-        let hiddenNotice = try deliveredNotice(
-            hiddenMachine.ingest(fleet(source(title: nil, status: .blocked)))
-        )
-        XCTAssertEqual(hiddenNotice.subtitle, "Workspace")
     }
 
     func testSameAgentIDsOnDifferentSourcesDoNotCollide() throws {
@@ -329,23 +319,13 @@ final class AttentionMonitorTests: XCTestCase {
             enabled: true,
             fleet: fleet(
                 source(status: .working),
-                source(
-                    id: remote,
-                    generation: remoteGeneration,
-                    title: "Remote",
-                    status: .working
-                )
+                source(id: remote, generation: remoteGeneration, status: .working)
             )
         )
 
         let effects = machine.ingest(fleet(
             source(status: .blocked),
-            source(
-                id: remote,
-                generation: remoteGeneration,
-                title: "Remote",
-                status: .blocked
-            )
+            source(id: remote, generation: remoteGeneration, status: .blocked)
         ))
         let notices = effects.compactMap { effect -> AttentionNotice? in
             guard case .deliver(let notice) = effect else { return nil }
@@ -356,22 +336,15 @@ final class AttentionMonitorTests: XCTestCase {
         XCTAssertNotEqual(notices[0].threadIdentifier, notices[1].threadIdentifier)
     }
 
+    /// The `{source}` variable that names an endpoint in a banner reads this
+    /// flag, so a local-only fleet — the common case — leaves it out.
     @MainActor
-    func testLocalSourceTitleIsUsedOnlyWhenRemoteSectionIsVisible() {
-        let originalStyle = LocalSectionTitleSetting.shared.style
-        let originalCustomTitle = LocalSectionTitleSetting.shared.customTitle
-        defer {
-            LocalSectionTitleSetting.shared.style = originalStyle
-            LocalSectionTitleSetting.shared.customTitle = originalCustomTitle
-        }
-        LocalSectionTitleSetting.shared.style = .custom
-        LocalSectionTitleSetting.shared.customTitle = "MacBook Pro"
-
+    func testSourceLabelsAppearOnlyWhileARemoteSectionIsVisible() {
         let localOnly = FleetStore(
             repository: RemoteSourceRepository(load: { [] }, save: { _ in }),
             localStore: Store(initialState: .disconnected)
         )
-        XCTAssertNil(AttentionFleetObservation(store: localOnly).sources[0].sourceTitle)
+        XCTAssertFalse(localOnly.showsSourceLabels)
 
         let visibleRemote = RemoteSourceConfiguration(
             label: "Build Mac",
@@ -383,10 +356,7 @@ final class AttentionMonitorTests: XCTestCase {
             repository: RemoteSourceRepository(load: { [visibleRemote] }, save: { _ in }),
             localStore: Store(initialState: .disconnected)
         )
-        XCTAssertEqual(
-            AttentionFleetObservation(store: fleetWithRemote).sources[0].sourceTitle,
-            "MacBook Pro"
-        )
+        XCTAssertTrue(fleetWithRemote.showsSourceLabels)
 
         let hiddenRemote = RemoteSourceConfiguration(
             label: "Hidden Mac",
@@ -398,9 +368,7 @@ final class AttentionMonitorTests: XCTestCase {
             repository: RemoteSourceRepository(load: { [hiddenRemote] }, save: { _ in }),
             localStore: Store(initialState: .disconnected)
         )
-        XCTAssertNil(
-            AttentionFleetObservation(store: fleetWithHiddenRemote).sources[0].sourceTitle
-        )
+        XCTAssertFalse(fleetWithHiddenRemote.showsSourceLabels)
     }
 
     @MainActor
@@ -458,25 +426,23 @@ final class AttentionMonitorTests: XCTestCase {
     private func source(
         id: HerdrSourceID = .local,
         generation: AttentionSourceGenerationID? = nil,
-        title: String? = "This Mac",
         status: AgentStatus,
         paneID: String = "w1:p1",
         terminalID: String? = "terminal-1",
         taskTitle: String = "Task",
-        branch: String? = nil,
-        workspaceTitle: String = "Workspace"
+        subtitle: String = "Workspace",
+        body: String = "codex"
     ) -> AttentionSourceObservation {
         source(
             id: id,
             generation: generation,
-            title: title,
             agents: [agent(
                 status: status,
                 paneID: paneID,
                 terminalID: terminalID,
                 taskTitle: taskTitle,
-                branch: branch,
-                workspaceTitle: workspaceTitle
+                subtitle: subtitle,
+                body: body
             )]
         )
     }
@@ -484,13 +450,11 @@ final class AttentionMonitorTests: XCTestCase {
     private func source(
         id: HerdrSourceID = .local,
         generation: AttentionSourceGenerationID? = nil,
-        title: String? = "This Mac",
         agents: [AttentionAgentObservation]
     ) -> AttentionSourceObservation {
         AttentionSourceObservation(
             sourceID: id,
             generationID: generation ?? (id == .local ? localGeneration : replacementGeneration),
-            sourceTitle: title,
             isRemote: id != .local,
             availability: .ready(agents)
         )
@@ -498,43 +462,43 @@ final class AttentionMonitorTests: XCTestCase {
 
     private func emptySource(
         id: HerdrSourceID = .local,
-        generation: AttentionSourceGenerationID? = nil,
-        title: String? = "This Mac"
+        generation: AttentionSourceGenerationID? = nil
     ) -> AttentionSourceObservation {
-        source(id: id, generation: generation, title: title, agents: [])
+        source(id: id, generation: generation, agents: [])
     }
 
     private func unavailableSource(
         id: HerdrSourceID = .local,
-        generation: AttentionSourceGenerationID? = nil,
-        title: String? = "This Mac"
+        generation: AttentionSourceGenerationID? = nil
     ) -> AttentionSourceObservation {
         AttentionSourceObservation(
             sourceID: id,
             generationID: generation ?? (id == .local ? localGeneration : replacementGeneration),
-            sourceTitle: title,
             isRemote: id != .local,
             availability: .unavailable
         )
     }
 
+    /// taskTitle stands in for both the pane's terminal title and the rendered
+    /// notification title, the way the default title template relates them.
     private func agent(
         status: AgentStatus,
         paneID: String,
         terminalID: String?,
         taskTitle: String = "Task",
-        branch: String? = nil,
-        workspaceTitle: String = "Workspace"
+        subtitle: String = "Workspace",
+        body: String = "codex"
     ) -> AttentionAgentObservation {
         AttentionAgentObservation(
             pane: pane(
                 status: status,
                 paneID: paneID,
                 terminalID: terminalID,
-                taskTitle: taskTitle,
-                branch: branch
+                taskTitle: taskTitle
             ),
-            workspaceTitle: workspaceTitle
+            title: taskTitle,
+            subtitle: subtitle,
+            body: body
         )
     }
 
@@ -542,8 +506,7 @@ final class AttentionMonitorTests: XCTestCase {
         status: AgentStatus,
         paneID: String = "w1:p1",
         terminalID: String? = "terminal-1",
-        taskTitle: String = "Task",
-        branch: String? = nil
+        taskTitle: String = "Task"
     ) -> Pane {
         Pane(
             agent: "codex",
@@ -552,8 +515,7 @@ final class AttentionMonitorTests: XCTestCase {
             workspaceId: "w1",
             terminalId: terminalID,
             terminalTitleStripped: taskTitle,
-            tokens: PaneTokens(agentKind: "primary"),
-            branch: branch
+            tokens: PaneTokens(agentKind: "primary")
         )
     }
 
@@ -561,12 +523,16 @@ final class AttentionMonitorTests: XCTestCase {
         Workspace(workspaceId: "w1", label: "Workspace", number: 1)
     }
 
-    private func serverSnapshot(status: AgentStatus) -> HerdrSessionSnapshot {
-        HerdrSessionSnapshot(
-            version: "test",
-            protocolVersion: Herdr.supportedProtocol,
-            agents: [pane(status: status)],
-            workspaces: [workspace()]
+    /// No raw records: the notification title this fixture drives comes from
+    /// `{title}`, which reads the typed pane.
+    private func serverSnapshot(status: AgentStatus) -> SnapshotFetch {
+        SnapshotFetch(
+            session: HerdrSessionSnapshot(
+                version: "test",
+                protocolVersion: Herdr.supportedProtocol,
+                agents: [pane(status: status)],
+                workspaces: [workspace()]
+            )
         )
     }
 
@@ -591,13 +557,13 @@ final class AttentionMonitorTests: XCTestCase {
 }
 
 private actor AttentionSnapshotFeed {
-    let snapshot: HerdrSessionSnapshot
+    let snapshot: SnapshotFetch
 
-    init(snapshot: HerdrSessionSnapshot) {
+    init(snapshot: SnapshotFetch) {
         self.snapshot = snapshot
     }
 
-    func next() -> HerdrSessionSnapshot {
+    func next() -> SnapshotFetch {
         snapshot
     }
 }

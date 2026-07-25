@@ -43,6 +43,49 @@ The terminal to bring forward defaults to Ghostty. To use another one:
 defaults write io.github.cryks.shepherd TerminalBundleID <bundle id>
 ```
 
+## Customizing rows
+
+The Display settings tab decides what each row shows. A row is a list of lines, and every line has a left and a right side written as a template.
+
+| Syntax | Meaning |
+|---|---|
+| `{name}` | A variable. A name the language does not define renders as nothing. |
+| `{a\|b}` | The first alternative that has a value. |
+| `[…]` | Drops out when every variable inside it is empty, separators and all. |
+
+Anything herdr reports is addressable under `herdr.`, spelled the way herdr spells it:
+
+```
+{herdr.agent.terminal_title_stripped}   {herdr.agent.cwd}
+{herdr.agent.agent}                     {herdr.agent.agent_status}
+{herdr.workspace.label}                 {herdr.workspace.branch}
+{herdr.workspace.worktree.repo_name}    {herdr.tab.label}
+```
+
+Values your own hooks report with `herdr pane report-metadata` land in the same namespace: `{herdr.agent.tokens.model}`, `{herdr.workspace.tokens.jj_status}`, and the presentation fields `{herdr.agent.title}`, `{herdr.agent.display_agent}`, `{herdr.agent.state_labels.working}`.
+
+The remaining variables are Shepherd's own:
+
+| Variable | Value |
+|---|---|
+| `{title}` | Terminal title without the spinner and without Codex's `[ ! ] Action Required \|` prefix |
+| `{cwd_short}` | Working directory with your home as `~` |
+| `{cwd_name}` | Last component of the working directory |
+| `{excerpt}` | The agent's latest message, when excerpts are on |
+| `{source}` | This Mac or the remote's name, blank while no remote is visible |
+| `{agent_icon}` | The brand mark |
+| `{status_emoji}` | 🔴 blocked, 🟢 done, 🟡 working, ⚪ idle |
+
+The rows ship as:
+
+| Line | Left | Right |
+|---|---|---|
+| 1 | `{title\|herdr.agent.agent}` | `{herdr.agent.agent_status}` |
+| 2 | `{agent_icon\|herdr.agent.agent}[ {herdr.workspace.branch}]` | |
+| 3 | `{excerpt}` | |
+
+An override for one agent replaces that agent's whole line list. Notification titles, subtitles, and bodies take templates too, where `{excerpt}` and `{agent_icon}` render as nothing.
+
 ## Pop-out window
 
 To keep the list on screen, choose "Pop Out as Window" from the menu.
@@ -56,6 +99,7 @@ Connections use the standard macOS `ssh`, so `ProxyJump`, authentication methods
 ## Settings
 
 - Launch at login
+- Rewrite what each row and each notification shows, per agent if you like
 - Show agent brand marks in color (monochrome by default)
 - Blink the menu bar icon when attention is needed
 - Send macOS notifications when agents need attention (off by default)

@@ -95,6 +95,26 @@ final class AttentionNoticeStagerTests: XCTestCase {
         ]])
     }
 
+    func testEmptyBodyTemplateLeavesTheExcerptAsTheWholeBody() async {
+        let fixture = ExcerptStateFixture()
+        fixture.states[paneID] = .available(excerpt("May I edit main.swift?"))
+        let sink = EffectSink()
+        let stager = makeStager(
+            fixture: fixture,
+            sink: sink,
+            holdDuration: .milliseconds(50)
+        )
+
+        let released = expectation(description: "released on hold expiry")
+        sink.onBatch = { released.fulfill() }
+        stager.apply([.deliver(makeNotice(body: ""))])
+        await fulfillment(of: [released], timeout: 2)
+
+        XCTAssertEqual(sink.batches, [[
+            .deliver(makeNotice(body: "May I edit main.swift?")),
+        ]])
+    }
+
     func testHoldExpiryWithoutAvailableExcerptReleasesUnchangedBody() async {
         let fixture = ExcerptStateFixture()
         fixture.states[paneID] = .loading

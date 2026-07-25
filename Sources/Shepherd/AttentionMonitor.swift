@@ -12,6 +12,14 @@
 // termination remove the corresponding live notification. The first ready snapshot
 // after launch, source creation, runtime replacement, or notification re-enable is
 // a baseline and never delivers.
+//
+// Notification text is rendered where the fleet is captured: an observation
+// carries the three finished strings, and the reducer only copies them into the
+// notice it emits. Templates live in RowLayoutSetting and resolve through
+// FleetStore.rowContext, both of which are MainActor Observation state that the
+// reducer must stay free of. Identity — request IDs, thread identifiers, dedup,
+// removal — is derived from source, generation, and agent locator alone, so an
+// edited template never re-alerts an attention state the user already saw.
 
 import Foundation
 import Observation
@@ -54,9 +62,11 @@ struct AttentionAgentLocator: Hashable, Sendable {
     let target: Target
 }
 
-/// Platform-neutral notification request. Status is represented by the title's
-/// colored glyph, so neither the delivery layer nor localized status text is part
-/// of this contract. sourcePaneID names the agent pane observed at the
+/// Platform-neutral notification request. title, subtitle, and body arrive
+/// already rendered from the user's notification templates, so the delivery
+/// layer adds no text of its own and no localized status string is part of this
+/// contract; the glyph a default banner opens with comes from the title
+/// template's `{status_emoji}`. sourcePaneID names the agent pane observed at the
 /// transition; AttentionNoticeStager uses it to look up that pane's current
 /// excerpt before the notice reaches Notification Center. It is not persisted
 /// into the notification payload, and click routing keeps resolving the current
@@ -113,42 +123,33 @@ struct AttentionFleetObservation: Equatable {
     var sources: [AttentionSourceObservation]
 
     /// Captures the same filtered parent-agent population used by the menu and
-    /// Monitor. Store.workspaceGroups supplies the visible workspace heading,
-    /// including linked-worktree grouping, for the notification subtitle. The
-    /// local source label follows the menu's section rule: it is omitted when no
-    /// remote section is visible, then resolved from LocalSectionTitleSetting
-    /// when at least one visible remote makes source disambiguation useful.
+    /// Monitor, and renders each pane's notification text while the templates and
+    /// the fleet are both readable. Templates come from RowLayoutSetting and
+    /// their variables from FleetStore.rowContext — MainActor Observation state,
+    /// which is why the strings are produced here and not in the reducer.
     @MainActor
     init(store: FleetStore) {
-        let showsRemoteSections = store.remoteConfigurations.contains(where: \.isVisible)
+        let templates = RowLayoutSetting.shared.layout.notification
         sources = store.activeSources.map { source in
-            let sourceTitle: String?
-            if let configuration = source.configuration {
-                sourceTitle = configuration.displayName
-            } else if showsRemoteSections {
-                sourceTitle = LocalSectionTitleSetting.shared.localTitleWithRemotes
-            } else {
-                sourceTitle = nil
-            }
             let availability: AttentionSourceObservation.Availability
             if source.availableSnapshot == nil {
                 availability = .unavailable
             } else {
-                let agents = source.workspaceGroups.flatMap { group in
-                    let workspaceTitle = Self.workspaceTitle(group.workspace)
-                    return group.panes.map { pane in
-                        AttentionAgentObservation(
-                            pane: pane,
-                            workspaceTitle: workspaceTitle
+                let agents = source.workspaceGroups
+                    .flatMap { $0.panes }
+                    .map { pane in
+                        Self.observation(
+                            of: pane,
+                            sourceID: source.id,
+                            store: store,
+                            templates: templates
                         )
                     }
-                }
                 availability = .ready(agents)
             }
             return AttentionSourceObservation(
                 sourceID: source.id,
                 generationID: source.attentionGenerationID,
-                sourceTitle: sourceTitle,
                 isRemote: source.isRemote,
                 availability: availability
             )
@@ -159,12 +160,70 @@ struct AttentionFleetObservation: Equatable {
         self.sources = sources
     }
 
-    private static func workspaceTitle(_ workspace: Workspace) -> String {
-        guard let label = workspace.label,
-              !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return workspace.workspaceId
+    /// Renders one pane's notification fields. Variables resolve through
+    /// AgentRowContext.textTemplateValue, so `{agent_icon}` and `{excerpt}`
+    /// render empty — AttentionNoticeStager is the one place that puts an
+    /// excerpt into a banner. A pane with no row context resolves every variable
+    /// to empty and therefore reaches the fields rule with nothing to say.
+    @MainActor
+    private static func observation(
+        of pane: Pane,
+        sourceID: HerdrSourceID,
+        store: FleetStore,
+        templates: NotificationTemplates
+    ) -> AttentionAgentObservation {
+        let context = store.rowContext(
+            for: SourcePaneID(sourceID: sourceID, paneID: pane.paneId)
+        )
+        let fields = notificationFields(templates) { name in
+            context?.textTemplateValue(for: name)
         }
-        return label
+        return AttentionAgentObservation(
+            pane: pane,
+            title: fields.title,
+            subtitle: fields.subtitle,
+            body: fields.body
+        )
+    }
+
+    /// Renders the three fields and settles what an empty one means. macOS shows
+    /// a banner with an empty title, subtitle, and body without complaint, so an
+    /// all-empty render — a user who cleared every template, or a pane whose
+    /// variables all resolved empty — falls back to the built-in templates. An
+    /// empty title is then filled from the subtitle, else the body, and the field
+    /// it came from is cleared, because the title is the line macOS always shows.
+    private static func notificationFields(
+        _ templates: NotificationTemplates,
+        _ resolve: (String) -> TemplateValue?
+    ) -> (title: String, subtitle: String, body: String) {
+        var fields = render(templates, resolve)
+        if fields.title.isEmpty, fields.subtitle.isEmpty, fields.body.isEmpty {
+            fields = render(RowLayout.default.notification, resolve)
+        }
+        if fields.title.isEmpty {
+            if fields.subtitle.isEmpty {
+                fields.title = fields.body
+                fields.body = ""
+            } else {
+                fields.title = fields.subtitle
+                fields.subtitle = ""
+            }
+        }
+        return fields
+    }
+
+    /// No field is trimmed here: renderText already drops the whole render's
+    /// leading and trailing whitespace, so a template left with nothing but a
+    /// discarded separator group yields the empty string.
+    private static func render(
+        _ templates: NotificationTemplates,
+        _ resolve: (String) -> TemplateValue?
+    ) -> (title: String, subtitle: String, body: String) {
+        (
+            title: templates.title.renderText(resolve),
+            subtitle: templates.subtitle.renderText(resolve),
+            body: templates.body.renderText(resolve)
+        )
     }
 }
 
@@ -176,14 +235,19 @@ struct AttentionSourceObservation: Equatable {
 
     var sourceID: HerdrSourceID
     var generationID: AttentionSourceGenerationID
-    var sourceTitle: String?
     var isRemote: Bool
     var availability: Availability
 }
 
+/// One agent as seen at a capture, with the text its notification would carry
+/// already rendered. The reducer decides on the pane's status alone and never
+/// reads these strings, so an edited template or a renamed source changes what
+/// the agent's next attention transition says without delivering anything now.
 struct AttentionAgentObservation: Equatable {
     var pane: Pane
-    var workspaceTitle: String
+    var title: String
+    var subtitle: String
+    var body: String
 }
 
 /// Pure reducer for attention state. It has no AppKit, UserNotifications,
@@ -191,7 +255,6 @@ struct AttentionAgentObservation: Equatable {
 struct AttentionStateMachine {
     private struct SourceState {
         var generationID: AttentionSourceGenerationID
-        var sourceTitle: String?
         var isRemote: Bool
         var isAvailable: Bool
         var hasBaseline: Bool
@@ -277,7 +340,6 @@ struct AttentionStateMachine {
                 continue
             }
 
-            state.sourceTitle = observation.sourceTitle
             state.isRemote = observation.isRemote
             switch observation.availability {
             case .unavailable:
@@ -344,7 +406,6 @@ struct AttentionStateMachine {
         case .unavailable:
             return SourceState(
                 generationID: observation.generationID,
-                sourceTitle: observation.sourceTitle,
                 isRemote: observation.isRemote,
                 isAvailable: false,
                 hasBaseline: false,
@@ -353,7 +414,6 @@ struct AttentionStateMachine {
         case .ready(let agents):
             return SourceState(
                 generationID: observation.generationID,
-                sourceTitle: observation.sourceTitle,
                 isRemote: observation.isRemote,
                 isAvailable: true,
                 hasBaseline: true,
@@ -407,7 +467,6 @@ struct AttentionStateMachine {
                         effects.append(.deliver(makeNotice(
                             id: record.notificationID,
                             sourceID: sourceID,
-                            sourceTitle: state.sourceTitle,
                             agent: current
                         )))
                         record.ownsNotice = true
@@ -436,7 +495,6 @@ struct AttentionStateMachine {
                     effects.append(.deliver(makeNotice(
                         id: record.notificationID,
                         sourceID: sourceID,
-                        sourceTitle: state.sourceTitle,
                         agent: current
                     )))
                     record.ownsNotice = true
@@ -511,39 +569,24 @@ struct AttentionStateMachine {
         }
     }
 
+    /// Wraps the text the observation arrived with in a request. The notice is
+    /// built from the transition's observation, so a template edit or a rename
+    /// after delivery leaves the live banner alone.
     private func makeNotice(
         id: AttentionNotificationID,
         sourceID: HerdrSourceID,
-        sourceTitle: String?,
         agent: AttentionAgentObservation
     ) -> AttentionNotice {
-        let statusGlyph = agent.pane.agentStatus == .blocked ? "🔴" : "🟢"
-        let agentName = agent.pane.agent ?? "?"
-        let body: String
-        if let branch = agent.pane.branch, !branch.isEmpty {
-            body = "\(agentName) · \(branch)"
-        } else {
-            body = agentName
-        }
-        let subtitle = [sourceTitle, agent.workspaceTitle]
-            .compactMap { value -> String? in
-                guard let value,
-                      !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                    return nil
-                }
-                return value
-            }
-            .joined(separator: " · ")
-        return AttentionNotice(
+        AttentionNotice(
             id: id,
             sourcePaneID: SourcePaneID(
                 sourceID: sourceID,
                 paneID: agent.pane.paneId
             ),
             threadIdentifier: Self.threadIdentifier(sourceID: sourceID),
-            title: "\(statusGlyph) \(agent.pane.displayTitle)",
-            subtitle: subtitle,
-            body: body
+            title: agent.title,
+            subtitle: agent.subtitle,
+            body: agent.body
         )
     }
 

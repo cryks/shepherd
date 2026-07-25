@@ -1082,15 +1082,18 @@ final class FleetStoreTests: XCTestCase {
         ),
         pollInterval: Duration = .seconds(60)
     ) -> Store {
-        let serverSnapshot = HerdrSessionSnapshot(
-            version: "test",
-            protocolVersion: Herdr.supportedProtocol,
-            agents: Array(snapshot.panes.values),
-            workspaces: Array(snapshot.workspaces.values)
+        let fetch = SnapshotFetch(
+            session: HerdrSessionSnapshot(
+                version: "test",
+                protocolVersion: Herdr.supportedProtocol,
+                agents: Array(snapshot.panes.values),
+                workspaces: Array(snapshot.workspaces.values)
+            ),
+            raw: snapshot.raw
         )
         return Store(
             dataSource: StoreDataSource(
-                snapshot: { serverSnapshot },
+                snapshot: { fetch },
                 worktrees: { _ in WorktreeListResult(worktrees: []) }
             ),
             agentReadDataSource: agentReadDataSource,
@@ -1106,17 +1109,19 @@ final class FleetStoreTests: XCTestCase {
         counter: CallCounter,
         pollInterval: Duration
     ) -> Store {
-        let serverSnapshot = HerdrSessionSnapshot(
-            version: "test",
-            protocolVersion: Herdr.supportedProtocol,
-            agents: [],
-            workspaces: []
+        let fetch = SnapshotFetch(
+            session: HerdrSessionSnapshot(
+                version: "test",
+                protocolVersion: Herdr.supportedProtocol,
+                agents: [],
+                workspaces: []
+            )
         )
         return Store(
             dataSource: StoreDataSource(
                 snapshot: {
                     counter.increment()
-                    return serverSnapshot
+                    return fetch
                 },
                 worktrees: { _ in WorktreeListResult(worktrees: []) }
             ),

@@ -11,7 +11,7 @@ import XCTest
 final class StartupSynchronizationTests: XCTestCase {
     @MainActor
     func test最初のSnapshot一回でReadyになる() async {
-        let snapshots = ControlledCalls<HerdrSessionSnapshot>(count: 1, name: "session.snapshot")
+        let snapshots = ControlledCalls<SnapshotFetch>(count: 1, name: "session.snapshot")
         let pane = makePane(id: "w1:p1", title: "Initial")
         let store = makeStore(snapshots: snapshots)
         defer { snapshots.finish() }
@@ -31,7 +31,7 @@ final class StartupSynchronizationTests: XCTestCase {
 
     @MainActor
     func testPollでSnapshotを更新する() async {
-        let snapshots = ControlledCalls<HerdrSessionSnapshot>(count: 2, name: "session.snapshot")
+        let snapshots = ControlledCalls<SnapshotFetch>(count: 2, name: "session.snapshot")
         let first = makePane(id: "w1:p1", title: "First")
         let refreshed = makePane(id: "w1:p1", title: "Refreshed")
         let store = makeStore(snapshots: snapshots, pollInterval: .milliseconds(10))
@@ -56,7 +56,7 @@ final class StartupSynchronizationTests: XCTestCase {
 
     @MainActor
     func test失敗した初回取得を次のPollで再試行する() async {
-        let snapshots = ControlledCalls<HerdrSessionSnapshot>(count: 2, name: "session.snapshot")
+        let snapshots = ControlledCalls<SnapshotFetch>(count: 2, name: "session.snapshot")
         let pane = makePane(id: "w1:p1", title: "Retried")
         let store = makeStore(snapshots: snapshots, pollInterval: .milliseconds(20))
         defer { snapshots.finish() }
@@ -80,7 +80,7 @@ final class StartupSynchronizationTests: XCTestCase {
 
     @MainActor
     func test遅いSnapshotへPollTickを重ねない() async {
-        let snapshots = ControlledCalls<HerdrSessionSnapshot>(count: 2, name: "session.snapshot")
+        let snapshots = ControlledCalls<SnapshotFetch>(count: 2, name: "session.snapshot")
         let pane = makePane(id: "w1:p1", title: "Slow")
         let store = makeStore(snapshots: snapshots, pollInterval: .milliseconds(2))
         defer { snapshots.finish() }
@@ -101,7 +101,7 @@ final class StartupSynchronizationTests: XCTestCase {
 
     @MainActor
     func testSnapshotのProtocol不一致を公開しない() async {
-        let snapshots = ControlledCalls<HerdrSessionSnapshot>(count: 1, name: "session.snapshot")
+        let snapshots = ControlledCalls<SnapshotFetch>(count: 1, name: "session.snapshot")
         let pane = makePane(id: "w1:p1", title: "Unsupported")
         let store = makeStore(snapshots: snapshots)
         defer { snapshots.finish() }
@@ -128,7 +128,7 @@ final class StartupSynchronizationTests: XCTestCase {
 
     @MainActor
     func testStop後に完了したSnapshotを公開せず再開もしない() async {
-        let snapshots = ControlledCalls<HerdrSessionSnapshot>(count: 1, name: "session.snapshot")
+        let snapshots = ControlledCalls<SnapshotFetch>(count: 1, name: "session.snapshot")
         let pane = makePane(id: "w1:p1", title: "Stopped")
         let store = makeStore(snapshots: snapshots)
         defer { snapshots.finish() }
@@ -149,7 +149,7 @@ final class StartupSynchronizationTests: XCTestCase {
 
     @MainActor
     func testSuspend中はPollを止めResumeで直ちに再取得する() async {
-        let snapshots = ControlledCalls<HerdrSessionSnapshot>(count: 2, name: "session.snapshot")
+        let snapshots = ControlledCalls<SnapshotFetch>(count: 2, name: "session.snapshot")
         let stale = makePane(id: "w1:p1", title: "Stale")
         let fresh = makePane(id: "w1:p1", title: "Fresh")
         let store = makeStore(snapshots: snapshots, pollInterval: .milliseconds(2))
@@ -182,7 +182,7 @@ final class StartupSynchronizationTests: XCTestCase {
 
     @MainActor
     func testStart前にSuspendしたStoreはResumeまで取得しない() async {
-        let snapshots = ControlledCalls<HerdrSessionSnapshot>(count: 1, name: "session.snapshot")
+        let snapshots = ControlledCalls<SnapshotFetch>(count: 1, name: "session.snapshot")
         let pane = makePane(id: "w1:p1", title: "Deferred")
         let store = makeStore(snapshots: snapshots, pollInterval: .milliseconds(5))
         defer {
@@ -206,7 +206,7 @@ final class StartupSynchronizationTests: XCTestCase {
 
     @MainActor
     func testPollIntervalを実行中に差し替える() async {
-        let snapshots = ControlledCalls<HerdrSessionSnapshot>(count: 2, name: "session.snapshot")
+        let snapshots = ControlledCalls<SnapshotFetch>(count: 2, name: "session.snapshot")
         let store = makeStore(snapshots: snapshots, pollInterval: .seconds(60))
         defer {
             store.stop()
@@ -228,7 +228,7 @@ final class StartupSynchronizationTests: XCTestCase {
 
     @MainActor
     private func makeStore(
-        snapshots: ControlledCalls<HerdrSessionSnapshot>,
+        snapshots: ControlledCalls<SnapshotFetch>,
         pollInterval: Duration = .milliseconds(200)
     ) -> Store {
         Store(
@@ -240,17 +240,21 @@ final class StartupSynchronizationTests: XCTestCase {
         )
     }
 
+    /// A fetch carrying only the typed snapshot: these tests observe polling and
+    /// publication, which never look at the raw records.
     private func makeSnapshot(
         panes: [Pane],
         protocolVersion: Int = Herdr.supportedProtocol
-    ) -> HerdrSessionSnapshot {
-        HerdrSessionSnapshot(
-            version: "test",
-            protocolVersion: protocolVersion,
-            agents: panes,
-            workspaces: panes.isEmpty ? [] : [
-                Workspace(workspaceId: "w1", label: "Workspace", number: 1),
-            ]
+    ) -> SnapshotFetch {
+        SnapshotFetch(
+            session: HerdrSessionSnapshot(
+                version: "test",
+                protocolVersion: protocolVersion,
+                agents: panes,
+                workspaces: panes.isEmpty ? [] : [
+                    Workspace(workspaceId: "w1", label: "Workspace", number: 1),
+                ]
+            )
         )
     }
 

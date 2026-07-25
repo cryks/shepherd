@@ -1,8 +1,18 @@
 // A single agent's row (AgentRow) and the per-workspace headed list
-// (AgentGroupList). Both surfaces share the title, subtitle, and available
-// one-line Excerpt. Supported menu rows reserve that line while loading or
-// empty so the panel height stays stable; Monitor rows add it only when text is
-// available.
+// (AgentGroupList).
+//
+// A row is a fixed status icon plus the lines of the RowLayout in effect: each
+// line draws a left and a right template, each with its own RowTextStyle
+// preset, and a line whose two sides both render empty is dropped. Menu rows
+// keep the height of a line that reads {excerpt} across the loading and empty
+// states so the panel does not resize when the excerpt arrives; Monitor rows
+// show that line only once text is available.
+//
+// This file owns what a preset looks like (font, weight, hierarchical color,
+// {agent_icon} size) and nothing about where values come from: AgentRowContext
+// resolves every variable name, and the caller builds one per pane. Row colors
+// stay hierarchical or branch on hover so the single foregroundStyle switch in
+// `body` inverts the whole row for the menu's selected state.
 //
 // A local row's main content is a Button carrying agent.focus. A remote row's
 // main content remains static. AgentGroupList constructs the cross-source
@@ -20,10 +30,13 @@ struct AgentGroupList: View {
     let sourceID: HerdrSourceID
     let groups: [(workspace: Workspace, panes: [Pane])]
     let hoverStyle: AgentRow.HoverStyle
+    /// Template values for one row. `groups` and this lookup are read from the
+    /// same snapshot, so nil means the pane is gone and the row is skipped.
+    let rowContext: (SourcePaneID) -> AgentRowContext?
     let highlightedPaneID: SourcePaneID?
     let excerptState: ((SourcePaneID) -> AgentExcerptState?)?
-    /// Menu rows reserve one caption line across loading, available, and empty
-    /// states. Monitor rows render only an available Excerpt.
+    /// Menu rows reserve the height of the {excerpt} line across loading,
+    /// available, and empty states. Monitor rows render only an available Excerpt.
     let reservesExcerptLine: Bool
     let onFocus: ((Pane) -> Void)?
 
@@ -31,6 +44,7 @@ struct AgentGroupList: View {
         sourceID: HerdrSourceID,
         groups: [(workspace: Workspace, panes: [Pane])],
         hoverStyle: AgentRow.HoverStyle,
+        rowContext: @escaping (SourcePaneID) -> AgentRowContext?,
         highlightedPaneID: SourcePaneID? = nil,
         excerptState: ((SourcePaneID) -> AgentExcerptState?)? = nil,
         reservesExcerptLine: Bool = false,
@@ -39,6 +53,7 @@ struct AgentGroupList: View {
         self.sourceID = sourceID
         self.groups = groups
         self.hoverStyle = hoverStyle
+        self.rowContext = rowContext
         self.highlightedPaneID = highlightedPaneID
         self.excerptState = excerptState
         self.reservesExcerptLine = reservesExcerptLine
@@ -53,11 +68,11 @@ struct AgentGroupList: View {
                     workspaceID: group.workspace.workspaceId
                 ),
                 workspace: group.workspace,
-                panes: group.panes.map { pane in
-                    IdentifiedPane(
-                        id: SourcePaneID(sourceID: sourceID, paneID: pane.paneId),
-                        pane: pane
-                    )
+                panes: group.panes.compactMap { pane in
+                    let id = SourcePaneID(sourceID: sourceID, paneID: pane.paneId)
+                    return rowContext(id).map { context in
+                        IdentifiedPane(id: id, pane: pane, context: context)
+                    }
                 }
             )
         }
@@ -73,7 +88,7 @@ struct AgentGroupList: View {
                     .padding(.top, 6)
                 ForEach(group.panes) { identifiedPane in
                     AgentRow(
-                        pane: identifiedPane.pane,
+                        context: identifiedPane.context,
                         hoverStyle: hoverStyle,
                         isRevealed: identifiedPane.id == highlightedPaneID,
                         excerptState: excerptState?(identifiedPane.id),
@@ -107,6 +122,7 @@ struct AgentGroupList: View {
     private struct IdentifiedPane: Identifiable {
         let id: SourcePaneID
         let pane: Pane
+        let context: AgentRowContext
     }
 }
 
@@ -123,15 +139,19 @@ struct AgentRow: View {
         case menu
     }
 
-    let pane: Pane
+    /// Everything the templates read, plus the pane the row is drawn for: the
+    /// status icon, the `status` preset's color, and the per-agent line
+    /// override all come from `context.pane`.
+    let context: AgentRowContext
     let hoverStyle: HoverStyle
     /// Programmatic, transient emphasis used after a notification opens Monitor.
     /// It does not change clickability or establish persistent selection.
     let isRevealed: Bool
-    /// Load state for a supported agent. nil means no grammar exists and keeps
-    /// the title/subtitle layout at two lines.
+    /// Load state of the excerpt. nil means the preference is off or the pane
+    /// has no supported terminal grammar; `{excerpt}` then resolves empty and
+    /// no line is reserved.
     let excerptState: AgentExcerptState?
-    /// Whether loading and empty states reserve the Excerpt caption line.
+    /// Whether loading and empty states reserve the height of the {excerpt} line.
     let reservesExcerptLine: Bool
     /// Jump-to action on row click. nil marks a remote, monitor-only row,
     /// which gets no Button and no hover feedback.
@@ -139,6 +159,22 @@ struct AgentRow: View {
 
     @State private var isHovered = false
     @AppStorage(colorAgentIconsKey) private var colorAgentIcons = false
+
+    init(
+        context: AgentRowContext,
+        hoverStyle: HoverStyle,
+        isRevealed: Bool = false,
+        excerptState: AgentExcerptState? = nil,
+        reservesExcerptLine: Bool = false,
+        onFocus: (() -> Void)? = nil
+    ) {
+        self.context = context
+        self.hoverStyle = hoverStyle
+        self.isRevealed = isRevealed
+        self.excerptState = excerptState
+        self.reservesExcerptLine = reservesExcerptLine
+        self.onFocus = onFocus
+    }
 
     var body: some View {
         Group {
@@ -155,9 +191,9 @@ struct AgentRow: View {
         .contentShape(Rectangle())
         .padding(.vertical, 3)
         .padding(.horizontal, 12)
-        // The foreground color is switched in one place here. The subtitle's
-        // .secondary and the template-rendered mark derive from this color as
-        // hierarchical styles, so the menu inversion needs no per-element handling.
+        // The foreground color is switched in one place here. Every preset
+        // expresses its color as a hierarchical style (.secondary / .primary)
+        // or branches on hover, so the menu inversion needs no per-line handling.
         .foregroundStyle(isMenuHighlighted ? Color(nsColor: .selectedMenuItemTextColor) : Color.primary)
         .background(
             rowBackground,
@@ -166,95 +202,177 @@ struct AgentRow: View {
         .onHover { isHovered = onFocus == nil ? false : $0 }
     }
 
+    /// The status icon is a fixed slot outside the templates: it sits beside
+    /// the line stack, centered over the whole row, and is always drawn.
     private var rowContent: some View {
         HStack(spacing: 8) {
-            Image(nsImage: StatusIcons.icon(for: pane.agentStatus))
+            Image(nsImage: StatusIcons.icon(for: context.pane.agentStatus))
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(pane.displayTitle)
-                        .fontWeight(.semibold)
-                        .lineLimit(1)
-                    Spacer()
-                    Text(pane.agentStatus.rawValue)
-                        .font(.caption)
-                        // Native menus uniformly invert selected text to the
-                        // selected foreground color, so only while hovered in
-                        // menu style we drop the status's semantic color and
-                        // follow the parent foreground color instead.
-                        .foregroundStyle(
-                            isMenuHighlighted
-                                ? AnyShapeStyle(.primary)
-                                : AnyShapeStyle(pane.agentStatus.indicatorColor)
-                        )
+                ForEach(lines) { line in
+                    lineView(line)
                 }
-                subtitle
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                excerptLine
             }
         }
     }
 
-    /// Menu rows keep this caption's metrics mounted for every supported state,
-    /// preventing the panel from resizing when the first Excerpt arrives.
-    /// Monitor rows omit loading and empty states to preserve their current
-    /// information density.
+    /// Lines in effect for this pane. Read during body evaluation so an edit in
+    /// the settings pane redraws every mounted row.
+    private var lines: [RowLine] {
+        RowLayoutSetting.shared.layout.lines(forAgent: context.pane.agent)
+    }
+
+    /// Variable name that carries the extracted agent message. A line naming it
+    /// is the one whose height the menu reserves.
+    private static let excerptVariable = "excerpt"
+
     @ViewBuilder
-    private var excerptLine: some View {
-        if let excerptState {
-            switch excerptState {
-            case .loading:
-                if reservesExcerptLine {
-                    excerptPlaceholder
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityLabel("Excerpt")
-                        .accessibilityValue("Loading")
-                }
-            case .available(let excerpt):
-                if reservesExcerptLine {
-                    excerptPlaceholder
-                        .hidden()
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        // Overlay content does not participate in vertical
-                        // measurement, so fallback glyph metrics cannot resize
-                        // the menu after the placeholder is replaced.
-                        .overlay(alignment: .leading) {
-                            excerptText(excerpt)
-                        }
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("Excerpt")
-                        .accessibilityValue(excerpt.text)
-                } else {
-                    excerptText(excerpt)
-                }
-            case .empty:
-                if reservesExcerptLine {
-                    excerptPlaceholder
-                        .hidden()
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityHidden(true)
-                }
+    private func lineView(_ line: RowLine) -> some View {
+        let left = line.left.render(context.templateValue(for:))
+        let right = line.right.render(context.templateValue(for:))
+        if reservesExcerptLine, let excerptState, readsExcerpt(line) {
+            reservedExcerptLine(line, left: left, right: right, state: excerptState)
+        } else if !left.isEmpty || !right.isEmpty {
+            lineContent(line, left: left, right: right)
+        }
+    }
+
+    private func lineContent(
+        _ line: RowLine,
+        left: [TemplateRun],
+        right: [TemplateRun]
+    ) -> some View {
+        HStack(spacing: 6) {
+            runsView(left, style: line.leftStyle)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            // A line with an empty right template spends none of its width on
+            // the gap, so the left side truncates at the same column it would
+            // reach on a line that has no right template at all.
+            if !right.isEmpty {
+                Spacer()
+                // The right side keeps its width and the left side gives way, so
+                // a long title truncates instead of pushing the status off the row.
+                runsView(right, style: line.rightStyle)
+                    .lineLimit(1)
+                    .layoutPriority(1)
             }
         }
     }
 
-    private func excerptText(_ excerpt: AgentExcerpt) -> some View {
-        Text(excerpt.text)
-            .font(.caption.monospaced())
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .accessibilityLabel("Excerpt")
-            .accessibilityValue(excerpt.text)
+    /// Menu rows keep this line's metrics mounted for every excerpt state,
+    /// preventing the panel from resizing when the first Excerpt arrives. The
+    /// placeholder alone decides the height in all three states; while loading
+    /// it is also what the row shows, so a line mixing {excerpt} with other
+    /// variables displays only the placeholder until text arrives.
+    @ViewBuilder
+    private func reservedExcerptLine(
+        _ line: RowLine,
+        left: [TemplateRun],
+        right: [TemplateRun],
+        state: AgentExcerptState
+    ) -> some View {
+        switch state {
+        case .loading:
+            excerptPlaceholder(style: line.leftStyle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityLabel("Excerpt")
+                .accessibilityValue("Loading")
+        case .available(let excerpt):
+            excerptPlaceholder(style: line.leftStyle)
+                .hidden()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // Overlay content does not participate in vertical measurement,
+                // so fallback glyph metrics cannot resize the menu after the
+                // placeholder is replaced.
+                .overlay(alignment: .leading) {
+                    lineContent(line, left: left, right: right)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Excerpt")
+                .accessibilityValue(excerpt.text)
+        case .empty:
+            excerptPlaceholder(style: line.leftStyle)
+                .hidden()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityHidden(true)
+        }
     }
 
-    private var excerptPlaceholder: some View {
+    private func excerptPlaceholder(style: RowTextStyle) -> some View {
         Text("Loading…")
-            .font(.caption.monospaced())
-            .foregroundStyle(.secondary)
             .lineLimit(1)
+            .modifier(rowTextStyle(style))
     }
+
+    private func readsExcerpt(_ line: RowLine) -> Bool {
+        line.left.variableNames.contains(Self.excerptVariable)
+            || line.right.variableNames.contains(Self.excerptVariable)
+    }
+
+    // MARK: - Runs
+
+    /// Draws one side of a line. A render with no icon is a single text run and
+    /// becomes one Text; an icon run splits the side into an HStack whose
+    /// spacing is 0, because the separation around a mark is written in the
+    /// template (`{agent_icon}[ {…}]`) rather than imposed here.
+    @ViewBuilder
+    private func runsView(_ runs: [TemplateRun], style: RowTextStyle) -> some View {
+        if runs.count == 1, case .text(let text) = runs[0] {
+            Text(text)
+                .modifier(rowTextStyle(style))
+        } else {
+            HStack(spacing: 0) {
+                // Runs carry no identity of their own, and a re-render replaces
+                // the whole line, so position is the only identity available.
+                ForEach(runs.indices, id: \.self) { index in
+                    switch runs[index] {
+                    case .text(let text):
+                        Text(text)
+                    case .icon(let agent):
+                        agentIcon(agent, style: style)
+                    }
+                }
+            }
+            .modifier(rowTextStyle(style))
+        }
+    }
+
+    /// The brand mark. Its fill is switched by the setting (colorAgentIconsKey):
+    /// mono renders the solid-black asset as a template so it follows the line's
+    /// foreground color and dark mode; color renders the original to preserve
+    /// the brand colors. The agent name is relegated to the hover tooltip.
+    /// An agent with no asset draws nothing — the resolver already reports such
+    /// agents as empty, so a `{agent_icon|…}` fallback has taken over by here.
+    @ViewBuilder
+    private func agentIcon(_ agent: String, style: RowTextStyle) -> some View {
+        let iconStyle: AgentIconStyle = colorAgentIcons ? .color : .mono
+        if let mark = AgentIcons.icon(for: agent, style: iconStyle) {
+            let size = Self.iconSize(for: style)
+            Image(nsImage: mark)
+                .renderingMode(iconStyle == .mono ? .template : .original)
+                .resizable()
+                .scaledToFit()
+                .frame(width: size, height: size)
+                .help(agent)
+        }
+    }
+
+    /// Square edge of a mark. 11pt was tuned against the 12pt .callout of the
+    /// sub-line, so each preset keeps that ratio against its own font size and a
+    /// mark on a caption line reads at caption weight.
+    private static func iconSize(for style: RowTextStyle) -> CGFloat {
+        (NSFont.preferredFont(forTextStyle: style.appKitTextStyle).pointSize * 11 / 12).rounded()
+    }
+
+    private func rowTextStyle(_ style: RowTextStyle) -> RowTextStyleModifier {
+        RowTextStyleModifier(
+            style: style,
+            statusColor: context.pane.agentStatus.indicatorColor,
+            isMenuHighlighted: isMenuHighlighted
+        )
+    }
+
+    // MARK: - Hover
 
     /// Whether we are hovered in menu style. The foreground color inversion
     /// happens only in this state; list style lays down a background only and
@@ -279,39 +397,56 @@ struct AgentRow: View {
         case .menu: 9
         }
     }
+}
 
-    /// The sub-line. Agents with a mark asset are shown as "brand mark +
-    /// branch name", with the agent name string relegated to the hover tooltip.
-    /// Panes without a branch (non-git, detached HEAD, fetch failure) show the
-    /// mark only. Agents without a mark keep the displaySubtitle text.
-    /// The mark's fill is switched by the setting (colorAgentIconsKey): mono
-    /// renders the solid-black asset as a template so it follows the sub-line's
-    /// secondary foreground color and dark mode; color renders the original to
-    /// preserve the brand colors.
+/// Appearance of one RowTextStyle preset. Colors are hierarchical or branch on
+/// hover, never an absolute Color, so the row's single foregroundStyle switch
+/// still inverts the line when a menu row is highlighted.
+private struct RowTextStyleModifier: ViewModifier {
+    let style: RowTextStyle
+    let statusColor: Color
+    let isMenuHighlighted: Bool
+
     @ViewBuilder
-    private var subtitle: some View {
-        let style: AgentIconStyle = colorAgentIcons ? .color : .mono
-        if let agent = pane.agent, let mark = AgentIcons.icon(for: agent, style: style) {
-            HStack(spacing: 4) {
-                Image(nsImage: mark)
-                    .renderingMode(style == .mono ? .template : .original)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 11, height: 11)
-                if let branch = pane.branch {
-                    Text(branch)
-                }
-            }
-            .help(agent)
-        } else {
-            Text(pane.displaySubtitle)
+    func body(content: Content) -> some View {
+        switch style {
+        case .heading:
+            content.fontWeight(.semibold)
+        case .body:
+            content.font(.callout)
+        case .subdued:
+            content.font(.callout).foregroundStyle(.secondary)
+        case .monospace:
+            content.font(.caption.monospaced()).foregroundStyle(.secondary)
+        case .status:
+            // Native menus uniformly invert selected text to the selected
+            // foreground color, so only while hovered in menu style we drop the
+            // status's semantic color and follow the parent foreground color.
+            content
+                .font(.caption)
+                .foregroundStyle(
+                    isMenuHighlighted
+                        ? AnyShapeStyle(.primary)
+                        : AnyShapeStyle(statusColor)
+                )
         }
     }
+}
 
+private extension RowTextStyle {
+    /// AppKit counterpart of the preset's font, used only to size a mark
+    /// against the text beside it. The text itself is drawn with SwiftUI fonts.
+    var appKitTextStyle: NSFont.TextStyle {
+        switch self {
+        case .heading: .body
+        case .body, .subdued: .callout
+        case .monospace, .status: .caption1
+        }
+    }
 }
 
 extension AgentStatus {
-    /// Semantic color for each state. Shared by AgentRow's status string and
+    /// Semantic color for each state. Shared by AgentRow's status preset and
     /// the dots in the pop-out window's header summary. Matches the color
     /// family of the menu bar circles (StatusIcons: systemYellow / systemGreen
     /// / systemRed) to keep the visual language consistent.

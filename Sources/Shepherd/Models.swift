@@ -5,6 +5,11 @@
 // HerdrAgentInfo and agent.read into PaneRead.
 // Decoding assumes keyDecodingStrategy = .convertFromSnakeCase, so field names
 // are the JSON's snake_case converted to camelCase. Unknown keys are ignored.
+//
+// These types hold only what herdr sent, in the fields this app reads; no
+// display text is derived here. Rows and notifications render templates against
+// the verbatim records in HerdrRawSnapshot, so a field that exists only to be
+// shown belongs there, not on Pane or Workspace.
 
 import Foundation
 
@@ -40,42 +45,8 @@ struct Pane: Codable, Identifiable, Equatable {
     /// pane.created time and in the snapshot right after agent detection; a
     /// subsequent poll fills it in.
     var tokens: PaneTokens?
-    /// When the pane's workspace opens a git checkout, Store writes the branch
-    /// from worktree.list here. session.snapshot's JSON has no corresponding
-    /// key, so it is nil right after decoding. It stays nil for non-git
-    /// workspaces, detached HEAD, and polls where the worktree.list fetch
-    /// failed; the sub-row then shows no location (no fallback text like cwd).
-    var branch: String? = nil
 
     var id: String { paneId }
-
-    /// While Codex waits for input it retitles its terminal to
-    /// "[ ! ] Action Required | <task>", blinking the bracketed glyph between
-    /// "!" and ".". herdr's stripped title keeps that decoration; Shepherd
-    /// already shows the blocked state through status icons and notifications,
-    /// so display drops the prefix and keeps only the task part.
-    private static let codexActionRequiredPrefix = #/^\[ . \] Action Required \| /#
-
-    /// Text for the main row in lists (menu, monitor window) and for
-    /// notification titles.
-    /// While the work title is empty (e.g. right after the agent starts), the
-    /// agent name fills in.
-    var displayTitle: String {
-        if var title = terminalTitleStripped, !title.isEmpty {
-            title.replace(Self.codexActionRequiredPrefix, with: "")
-            if !title.isEmpty { return title }
-        }
-        return agent ?? "?"
-    }
-
-    /// Text form of the "who and where" sub-row in lists.
-    /// For agents with a mark asset, AgentRow composes the sub-row as icon +
-    /// branch, so this is the fallback for agents without a mark. A pane
-    /// without a branch shows only the agent name.
-    var displaySubtitle: String {
-        guard let branch else { return agent ?? "?" }
-        return "\(agent ?? "?") — \(branch)"
-    }
 }
 
 /// The portion of the metadata herdr attaches to a pane that Shepherd reads.

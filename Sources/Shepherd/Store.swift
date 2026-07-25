@@ -12,15 +12,18 @@
 //   - When a poll tick overlaps an in-flight fetch, the in-flight one is awaited.
 //     No extra fetch is issued right after completion; the next tick catches up to
 //     the latest state, so RPCs do not pile up on a slow endpoint
-//   - snapshot returns agents and workspaces from the same server capture. It is
-//     published as ready from the first response after the protocol matches
+//   - snapshot returns agents and workspaces from the same server capture, plus
+//     the verbatim herdr records of that same response line for the template
+//     layer. It is published as ready from the first response after the protocol
+//     matches
 //   - Branch names alone are not included in session.snapshot, so worktree.list is
 //     additionally fetched within the same poll for each workspace that has watched
 //     panes. One response returns branches for every workspace opening the same
 //     repo, so workspaces already resolved by an earlier response are not
-//     re-fetched. Failure of this fetch (including non-git workspaces) only means a
-//     missing display decoration (no branch name) and does not make the whole poll
-//     disconnected
+//     re-fetched. The result is written into the raw workspace records under
+//     `branch`, which is where `{herdr.workspace.branch}` reads it. Failure of this
+//     fetch (including non-git workspaces) only means a missing display decoration
+//     (no branch name) and does not make the whole poll disconnected
 //   - On session.snapshot failure, the stale list is not published; state returns
 //     to disconnected. Polling is not stopped, and the next success returns to ready
 //   - stop() cancels the poll and the in-flight task. If synchronous I/O returns
@@ -50,23 +53,46 @@ private let log = Logger(subsystem: "io.github.cryks.shepherd", category: "store
 struct AgentSnapshot: Equatable {
     var panes: [String: Pane]
     var workspaces: [String: Workspace]
+    /// The same records as panes and workspaces, kept as herdr sent them, for
+    /// the row and notification templates. agents holds one entry per tracked
+    /// pane; workspaces and tabs stay whole, since a tracked pane can point at
+    /// any of them. Equality of a snapshot therefore covers every herdr field,
+    /// not only the ones the typed models read.
+    var raw: HerdrRawSnapshot
 
     /// Converts server snapshot arrays into ID-keyed dictionaries for the UI.
     /// Subagent panes and panes with no detected agent are excluded at this
     /// boundary and never mixed into anything downstream in the display layer.
-    /// branches (workspace ID → branch name) are written into each pane's branch
-    /// at this boundary, so the display layer only needs to look at Pane.
-    init(agents: [Pane], workspaces: [Workspace], branches: [String: String] = [:]) {
-        panes = Dictionary(
-            uniqueKeysWithValues: agents
-                .filter(Store.shouldTrack)
-                .map { pane in
-                    var pane = pane
-                    pane.branch = branches[pane.workspaceId]
-                    return (pane.paneId, pane)
-                }
-        )
+    ///
+    /// - Parameters:
+    ///   - branches: Workspace ID → branch name from worktree.list. Each entry
+    ///     is written onto the matching raw workspace record as `branch`, the
+    ///     one field of that record herdr did not send.
+    ///   - raw: Records of the same session.snapshot response. Untracked panes
+    ///     are dropped from it here, so a subagent's record is not retained by
+    ///     the snapshot the UI holds.
+    init(
+        agents: [Pane],
+        workspaces: [Workspace],
+        branches: [String: String] = [:],
+        raw: HerdrRawSnapshot = .empty
+    ) {
+        let tracked = agents.filter(Store.shouldTrack)
+        panes = Dictionary(uniqueKeysWithValues: tracked.map { ($0.paneId, $0) })
         self.workspaces = Dictionary(uniqueKeysWithValues: workspaces.map { ($0.workspaceId, $0) })
+
+        let trackedPaneIDs = Set(tracked.map(\.paneId))
+        var raw = raw
+        raw.agents = raw.agents.filter { trackedPaneIDs.contains($0.key) }
+        for (workspaceId, branch) in branches {
+            // A workspace herdr did not report, or reported as something other
+            // than an object, still gets a record so the branch is addressable.
+            var members: [String: JSONValue] = [:]
+            if case .object(let existing)? = raw.workspaces[workspaceId] { members = existing }
+            members["branch"] = .string(branch)
+            raw.workspaces[workspaceId] = .object(members)
+        }
+        self.raw = raw
     }
 }
 
@@ -81,11 +107,25 @@ enum StoreState: Equatable {
     case protocolMismatch(Int)
 }
 
+/// One session.snapshot response in both forms the app needs: the typed model
+/// the store reduces, and the records exactly as herdr wrote them, which the
+/// template layer addresses by their snake_case names.
+struct SnapshotFetch {
+    var session: HerdrSessionSnapshot
+    var raw: HerdrRawSnapshot
+
+    /// Test and preview fixtures that only exercise the typed path.
+    init(session: HerdrSessionSnapshot, raw: HerdrRawSnapshot = .empty) {
+        self.session = session
+        self.raw = raw
+    }
+}
+
 /// RPC boundary the Store reads through. Tests control response completion and
 /// failure to reproduce the initial fetch, polling, and races with stop without a
 /// real socket.
 struct StoreDataSource: Sendable {
-    var snapshot: @Sendable () async throws -> HerdrSessionSnapshot
+    var snapshot: @Sendable () async throws -> SnapshotFetch
     /// Worktree list of the repo the workspace belongs to. Used only for showing
     /// the pane's branch name; failure has no bearing on the poll's success.
     var worktrees: @Sendable (_ workspaceID: String) async throws -> WorktreeListResult
@@ -95,11 +135,19 @@ struct StoreDataSource: Sendable {
     static func live(socketPath: String) -> StoreDataSource {
         StoreDataSource(
             snapshot: {
+                // One RPC, two decodes of its response line: makeDecoder() for
+                // the typed model, and a plain decoder for the raw tree, whose
+                // dynamic keys .convertFromSnakeCase would otherwise rewrite.
                 try await Herdr.request(
                     "session.snapshot",
                     socketPath: socketPath,
                     as: SessionSnapshotResult.self
-                ).snapshot
+                ) { result, responseLine in
+                    SnapshotFetch(
+                        session: result.snapshot,
+                        raw: try HerdrRawSnapshot.decode(responseLine: responseLine)
+                    )
+                }
             },
             worktrees: { workspaceID in
                 try await Herdr.request(
@@ -195,6 +243,36 @@ final class Store {
                 )
             }
             .sorted { $0.workspace.number < $1.workspace.number }
+    }
+
+    /// Verbatim herdr records addressed by the template language, for one
+    /// tracked pane.
+    ///
+    /// The workspace is the pane's own `workspace_id`, never the workspace a
+    /// linked worktree is displayed under, so `{herdr.workspace.*}` describes
+    /// the checkout the agent actually runs in. The tab is resolved through the
+    /// agent record's `tab_id`: pane and tab ids number independently, so it
+    /// cannot be derived from the pane id.
+    ///
+    /// Every element is nil outside `ready`, for an untracked or unknown pane,
+    /// and for a record herdr did not send.
+    func rawRecords(forPane paneID: String) -> (agent: JSONValue?, workspace: JSONValue?, tab: JSONValue?) {
+        guard case .ready(let snapshot) = state,
+              let agent = snapshot.raw.agents[paneID] else {
+            return (nil, nil, nil)
+        }
+        return (
+            agent: agent,
+            workspace: Self.identifier(agent, "workspace_id").flatMap { snapshot.raw.workspaces[$0] },
+            tab: Self.identifier(agent, "tab_id").flatMap { snapshot.raw.tabs[$0] }
+        )
+    }
+
+    /// String value of an id field, or nil when the key is absent or holds
+    /// another JSON type.
+    private static func identifier(_ record: JSONValue, _ key: String) -> String? {
+        guard case .string(let id)? = record[key] else { return nil }
+        return id
     }
 
     /// Current display-safe line for a pane. Terminal text stays in the
@@ -344,7 +422,8 @@ final class Store {
     private func loadSnapshot() async {
         defer { snapshotTask = nil }
         do {
-            let serverSnapshot = try await dataSource.snapshot()
+            let fetch = try await dataSource.snapshot()
+            let serverSnapshot = fetch.session
             guard !Task.isCancelled, !hasBeenStopped else { return }
             guard serverSnapshot.protocolVersion == Herdr.supportedProtocol else {
                 log.error("protocol mismatch: server=\(serverSnapshot.protocolVersion)")
@@ -359,7 +438,8 @@ final class Store {
                 AgentSnapshot(
                     agents: serverSnapshot.agents,
                     workspaces: serverSnapshot.workspaces,
-                    branches: branches
+                    branches: branches,
+                    raw: fetch.raw
                 )
             )
         } catch {

@@ -43,6 +43,8 @@ struct MenuPanel: View {
                 SourceList(
                     sections: store.sourceSections,
                     style: .menu,
+                    showsSourceLabels: store.showsSourceLabels,
+                    rowContext: store.rowContext(for:),
                     excerptState: store.agentExcerptState(for:),
                     onRemoteEnabledChange: setRemoteEnabled
                 ) { pane in

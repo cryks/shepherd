@@ -170,13 +170,17 @@ final class AttentionNoticeStager {
         attaching text: String?
     ) -> AttentionNotice {
         guard let text else { return notice }
+        // The separator belongs between two lines. A body template that renders
+        // empty leaves the excerpt as the whole body, with no blank line above
+        // it eating one of the few rows a banner shows.
+        let body = notice.body.isEmpty ? text : notice.body + "\n" + text
         return AttentionNotice(
             id: notice.id,
             sourcePaneID: notice.sourcePaneID,
             threadIdentifier: notice.threadIdentifier,
             title: notice.title,
             subtitle: notice.subtitle,
-            body: notice.body + "\n" + text
+            body: body
         )
     }
 }

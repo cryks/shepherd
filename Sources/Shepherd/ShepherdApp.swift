@@ -386,6 +386,10 @@ struct ShepherdApp: App {
                 updater: updater
             )
         }
+        // SettingsWindowSizer animates the window between per-tab sizes and
+        // owns each tab's floor; contentMinSize resizability keeps the frame
+        // draggable past that floor instead of locking it to the content.
+        .windowResizability(.contentMinSize)
     }
 }
 
