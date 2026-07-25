@@ -1,6 +1,7 @@
 # Creates a GitHub Release on every v* tag push.
-# Flow: tests, universal build + Developer ID signing, notarization, staple,
-# Sparkle appcast generation, attach zip + appcast, bump the Homebrew cask.
+# Flow: tests, release notes from CHANGELOG.md, universal build + Developer ID
+# signing, notarization, staple, Sparkle appcast generation, attach zip +
+# appcast, bump the Homebrew cask.
 #
 # Required secrets (repo Settings > Secrets and variables > Actions):
 # - MACOS_CERTIFICATE_P12:      base64 of the Developer ID Application cert (.p12)
@@ -31,6 +32,24 @@ jobs:
 
       - name: Run tests
         run: swift test
+
+      # Release notes are the CHANGELOG.md section whose heading starts with
+      # the tag ("## v1.2.3 - 2026-07-26"); the heading itself is dropped
+      # because both Sparkle and the release page already show the version.
+      # One file feeds the appcast item and the GitHub Release body so the two
+      # cannot drift. A tag with no matching section fails the job here, before
+      # signing and notarization, where moving the tag is still cheap.
+      - name: Extract release notes from the changelog
+        run: |
+          awk -v tag="$GITHUB_REF_NAME" '
+            $0 ~ "^## " tag "( |$)" { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          if [ ! -s "$RUNNER_TEMP/release-notes.md" ]; then
+            echo "CHANGELOG.md has no section for $GITHUB_REF_NAME"
+            exit 1
+          fi
 
       # Create a dedicated keychain on the runner and import the Developer
       # ID certificate into it. set-key-partition-list lets codesign use
@@ -94,6 +113,11 @@ jobs:
       # inside it. The app reads the feed at
       # releases/latest/download/appcast.xml (SUFeedURL), so the appcast is
       # attached to every release rather than hosted separately.
+      # A .md file sharing the archive's basename becomes that item's release
+      # notes. Markdown notes are linked rather than inlined by default, and
+      # nothing here hosts them, so --embed-release-notes writes them into the
+      # feed as <description sparkle:format="markdown">, which Sparkle 2.9
+      # renders natively on macOS 12 and later.
       - name: Generate Sparkle appcast
         env:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
@@ -107,9 +131,12 @@ jobs:
           tar -xJf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle"
           mkdir "$RUNNER_TEMP/appcast"
           cp "dist/Shepherd-${GITHUB_REF_NAME#v}.zip" "$RUNNER_TEMP/appcast/"
+          cp "$RUNNER_TEMP/release-notes.md" \
+            "$RUNNER_TEMP/appcast/Shepherd-${GITHUB_REF_NAME#v}.md"
           printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | \
             "$RUNNER_TEMP/sparkle/bin/generate_appcast" \
               --ed-key-file - \
+              --embed-release-notes \
               --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/" \
               --link "https://github.com/${GITHUB_REPOSITORY}" \
               "$RUNNER_TEMP/appcast"
@@ -123,7 +150,7 @@ jobs:
             "dist/Shepherd-${GITHUB_REF_NAME#v}.zip" \
             dist/appcast.xml \
             --title "Shepherd ${GITHUB_REF_NAME#v}" \
-            --generate-notes
+            --notes-file "$RUNNER_TEMP/release-notes.md"
 
       # Keep the Homebrew cask (cryks/homebrew-tap) pointing at this release.
       # Pushing to another repository needs a fine-grained PAT with

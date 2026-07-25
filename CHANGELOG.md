@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- The update dialog shows the release notes for the version it offers.
+
 ### Fixed
 
 - The working status text and its ○ mark no longer wash out in light mode.
