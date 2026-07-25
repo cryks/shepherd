@@ -605,7 +605,7 @@ enum MenuBarIconPresentation {
 enum StatusIcons {
     static let disconnected = circleImage(filled: false, dashed: true, template: true)
     static let quiet = circleImage(filled: false, template: true)
-    static let working = circleImage(color: .systemYellow, filled: false)
+    static let working = circleImage(color: .statusWorking, filled: false)
     static let done = circleImage(color: .systemGreen, filled: true)
     static let blocked = circleImage(color: .systemRed, filled: true)
 
@@ -657,6 +657,24 @@ enum StatusIcons {
             return true
         }
         image.isTemplate = template
+        // The stroke color can be appearance-dependent (statusWorking), and a
+        // cached bitmap would keep the color it was first drawn with after the
+        // system switches between light and dark. Redrawing one circle per
+        // display costs nothing.
+        image.cacheMode = .never
         return image
+    }
+}
+
+extension NSColor {
+    /// Yellow of the working state, shared by the ○ marks and the status text.
+    /// systemYellow reads at about 1.5:1 against the light menu background, too
+    /// little for the caption-sized text beside the mark, so light appearance
+    /// deepens it to about 2.6:1. Dark appearance keeps systemYellow, which
+    /// already stands out there.
+    static let statusWorking = NSColor(name: "statusWorking") { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? .systemYellow
+            : NSColor(srgbRed: 0.85, green: 0.58, blue: 0.0, alpha: 1)
     }
 }

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The working status text and its ○ mark no longer wash out in light mode.
+
 ## v0.13.0 - 2026-07-25
 
 ### Added

@@ -422,8 +422,13 @@ private struct RowTextStyleModifier: ViewModifier {
             // Native menus uniformly invert selected text to the selected
             // foreground color, so only while hovered in menu style we drop the
             // status's semantic color and follow the parent foreground color.
+            //
+            // Semibold: this is the one preset drawn in a saturated hue rather
+            // than a hierarchical style, and at caption size those hues carry
+            // too little contrast against the light menu background. The added
+            // stroke weight restores legibility without darkening the hue.
             content
-                .font(.caption)
+                .font(.caption.weight(.semibold))
                 .foregroundStyle(
                     isMenuHighlighted
                         ? AnyShapeStyle(.primary)
@@ -447,16 +452,20 @@ private extension RowTextStyle {
 
 extension AgentStatus {
     /// Semantic color for each state. Shared by AgentRow's status preset and
-    /// the dots in the pop-out window's header summary. Matches the color
-    /// family of the menu bar circles (StatusIcons: systemYellow / systemGreen
-    /// / systemRed) to keep the visual language consistent.
+    /// the dots in the pop-out window's header summary. Matches the colors the
+    /// circles are stroked with (StatusIcons: statusWorking / systemGreen /
+    /// systemRed) to keep the visual language consistent.
     var indicatorColor: Color {
         switch self {
-        case .working: .yellow
+        case .working: .statusWorking
         case .blocked: .red
         case .done: .green
         case .idle: .secondary
         case .unknown: .gray.opacity(0.5)
         }
     }
+}
+
+private extension Color {
+    static let statusWorking = Color(nsColor: .statusWorking)
 }
