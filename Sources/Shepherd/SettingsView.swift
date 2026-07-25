@@ -379,6 +379,7 @@ private struct RemoteSourcesSettingsView: View {
     @State private var editor: RemoteEditorContext?
     @State private var removalCandidate: RemoteSourceConfiguration?
     @State private var operationError: String?
+    @State private var reorder = RowReorder<HerdrSourceID>()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -386,14 +387,7 @@ private struct RemoteSourcesSettingsView: View {
                 ForEach(store.remoteConfigurations) { configuration in
                     remoteRow(configuration)
                         .tag(configuration.id)
-                }
-                .onMove { source, destination in
-                    do {
-                        try store.moveRemote(fromOffsets: source, toOffset: destination)
-                        operationError = nil
-                    } catch {
-                        operationError = error.localizedDescription
-                    }
+                        .reorderableRow(reorder, id: configuration.id)
                 }
             }
             .overlay {
@@ -496,6 +490,13 @@ private struct RemoteSourcesSettingsView: View {
 
     private func remoteRow(_ configuration: RemoteSourceConfiguration) -> some View {
         HStack(spacing: 10) {
+            RowGrabber(
+                id: configuration.id,
+                order: store.remoteConfigurations.map(\.id),
+                reorder: reorder,
+                move: moveRemote
+            )
+
             Toggle(
                 "",
                 isOn: Binding(
@@ -528,6 +529,15 @@ private struct RemoteSourcesSettingsView: View {
                 .help(statusHelp(configuration))
         }
         .padding(.vertical, 3)
+    }
+
+    private func moveRemote(fromOffsets source: IndexSet, toOffset destination: Int) {
+        do {
+            try store.moveRemote(fromOffsets: source, toOffset: destination)
+            operationError = nil
+        } catch {
+            operationError = error.localizedDescription
+        }
     }
 
     private func setRemoteVisible(_ id: HerdrSourceID, _ isVisible: Bool) {

@@ -13,8 +13,8 @@
 // widening the window widens the template fields. Template fields sit directly
 // in the scroll view, not in a List: an NSTableView-backed list takes clicks
 // for row handling before its field editor, which reads as text fields that
-// ignore the click. Without a List there is no onMove either, so lines reorder
-// with the arrow buttons on each line.
+// ignore the click. Lines reorder through RowReorder, the same grabber drag the
+// Remotes pane uses.
 //
 // Insertion into a template field targets the caret. While the field owns the
 // window's field editor the edit goes through NSTextView, which keeps undo and
@@ -314,21 +314,28 @@ private enum RestoreTarget: String, Identifiable {
 
 // MARK: - Line list
 
-/// The editable line list: one editor per line reordered with its arrow
-/// buttons, plus the button that appends a line.
+/// The editable line list: one editor per line, dragged by its grabber into
+/// another position, plus the button that appends a line.
 private struct RowLineList: View {
     @Binding var lines: [RowLine]
     let catalog: TemplateVariableCatalog
+
+    @State private var reorder = RowReorder<UUID>()
 
     var body: some View {
         ForEach($lines) { $line in
             RowLineEditor(
                 line: $line,
+                grabber: RowGrabber(
+                    id: line.id,
+                    order: lines.map(\.id),
+                    reorder: reorder,
+                    move: { lines.move(fromOffsets: $0, toOffset: $1) }
+                ),
                 catalog: catalog,
-                onMoveUp: move(line.id, by: -1),
-                onMoveDown: move(line.id, by: +1),
                 onDelete: { lines.removeAll { $0.id == line.id } }
             )
+            .reorderableRow(reorder, id: line.id)
             if line.id != lines.last?.id {
                 Divider()
             }
@@ -348,31 +355,27 @@ private struct RowLineList: View {
         }
         .buttonStyle(.borderless)
     }
-
-    /// Action swapping a line with its neighbor; nil at the end of travel, which
-    /// disables the button.
-    private func move(_ id: UUID, by delta: Int) -> (() -> Void)? {
-        guard let index = lines.firstIndex(where: { $0.id == id }),
-              lines.indices.contains(index + delta) else { return nil }
-        return { lines.swapAt(index, index + delta) }
-    }
 }
 
-/// One line: its left and right template with a style each, the arrow buttons
-/// ordering it, and the button that removes it. A line whose two sides both
+/// One line: the grabber it is dragged by, its left and right template with a
+/// style each, and the button that removes it. A line whose two sides both
 /// render empty is dropped by the row itself, so there is nothing to warn
 /// about here.
 private struct RowLineEditor: View {
     @Binding var line: RowLine
+    let grabber: RowGrabber<UUID>
     let catalog: TemplateVariableCatalog
-    let onMoveUp: (() -> Void)?
-    let onMoveDown: (() -> Void)?
     let onDelete: () -> Void
 
     private static let sideLabelWidth: CGFloat = 34
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(spacing: 8) {
+            // Stretched over both template rows: the grabber stands for the
+            // whole line, and the strip is what a drag has to hit.
+            grabber
+                .frame(maxHeight: .infinity)
+
             VStack(alignment: .leading, spacing: 6) {
                 side(
                     label: tr("Left", ja: "左"),
@@ -386,28 +389,12 @@ private struct RowLineEditor: View {
                 )
             }
 
-            orderButton(tr("Move Up", ja: "上へ"), systemImage: "chevron.up", action: onMoveUp)
-            orderButton(tr("Move Down", ja: "下へ"), systemImage: "chevron.down", action: onMoveDown)
-
             Button(role: .destructive, action: onDelete) {
                 Label(tr("Delete Line", ja: "行を削除"), systemImage: "trash")
             }
             .labelStyle(.iconOnly)
             .buttonStyle(.borderless)
         }
-    }
-
-    private func orderButton(
-        _ label: String,
-        systemImage: String,
-        action: (() -> Void)?
-    ) -> some View {
-        Button { action?() } label: {
-            Label(label, systemImage: systemImage)
-        }
-        .labelStyle(.iconOnly)
-        .buttonStyle(.borderless)
-        .disabled(action == nil)
     }
 
     private func side(
