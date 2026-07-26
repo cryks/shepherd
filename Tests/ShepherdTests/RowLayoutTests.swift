@@ -57,7 +57,17 @@ final class RowLayoutTests: XCTestCase {
             "🟢 Add payment flow integration tests"
         )
         XCTAssertEqual(notification(templates.subtitle), "devbox · webapp")
-        XCTAssertEqual(notification(templates.body), "claude · feature/checkout")
+        // The excerpt is not read yet at the status transition, so its line
+        // renders empty there and is filled when the stager renders the
+        // templates again with the excerpt supplied.
+        XCTAssertEqual(
+            templates.body.map { notification($0.template) },
+            ["claude · feature/checkout", ""]
+        )
+        XCTAssertEqual(
+            templates.body.last.map { row($0.template) },
+            "All 42 payment flow tests pass"
+        )
     }
 
     // MARK: - Helpers

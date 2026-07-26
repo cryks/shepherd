@@ -161,10 +161,12 @@ struct AttentionFleetObservation: Equatable {
     }
 
     /// Renders one pane's notification fields. Variables resolve through
-    /// AgentRowContext.textTemplateValue, so `{agent_icon}` and `{excerpt}`
-    /// render empty — AttentionNoticeStager is the one place that puts an
-    /// excerpt into a banner. A pane with no row context resolves every variable
-    /// to empty and therefore reaches the fields rule with nothing to say.
+    /// AgentRowContext.textTemplateValue, so `{agent_icon}` renders empty and
+    /// `{excerpt}` renders empty as well: the read that produces the excerpt for
+    /// this turn has not finished at the transition, and AttentionNoticeStager
+    /// renders the notice again once it has. A pane with no row context resolves
+    /// every variable to empty and therefore reaches the fields rule with
+    /// nothing to say.
     @MainActor
     private static func observation(
         of pane: Pane,
@@ -186,13 +188,41 @@ struct AttentionFleetObservation: Equatable {
         )
     }
 
-    /// Renders the three fields and settles what an empty one means. macOS shows
-    /// a banner with an empty title, subtitle, and body without complaint, so an
+    /// The staged notice with its text rendered again, this time with `excerpt`
+    /// bound to `{excerpt}`, so a template decides where the excerpt goes — or
+    /// leaves it out. Identity and routing are carried over untouched.
+    ///
+    /// nil when the pane has left the snapshot the variables read; the caller
+    /// then keeps the text rendered at the transition rather than presenting a
+    /// banner built from nothing.
+    @MainActor
+    static func rendered(
+        _ notice: AttentionNotice,
+        excerpt: String,
+        store: FleetStore
+    ) -> AttentionNotice? {
+        guard let context = store.rowContext(for: notice.sourcePaneID) else { return nil }
+        let fields = notificationFields(RowLayoutSetting.shared.layout.notification) { name in
+            name == "excerpt" ? .text(excerpt) : context.textTemplateValue(for: name)
+        }
+        return AttentionNotice(
+            id: notice.id,
+            sourcePaneID: notice.sourcePaneID,
+            threadIdentifier: notice.threadIdentifier,
+            title: fields.title,
+            subtitle: fields.subtitle,
+            body: fields.body
+        )
+    }
+
+    /// Renders the fields and settles what an empty one means. macOS shows a
+    /// banner with an empty title, subtitle, and body without complaint, so an
     /// all-empty render — a user who cleared every template, or a pane whose
     /// variables all resolved empty — falls back to the built-in templates. An
-    /// empty title is then filled from the subtitle, else the body, and the field
-    /// it came from is cleared, because the title is the line macOS always shows.
-    private static func notificationFields(
+    /// empty title is then filled from the subtitle, else the first body line,
+    /// and the field it came from is dropped, because the title is the line
+    /// macOS always shows.
+    static func notificationFields(
         _ templates: NotificationTemplates,
         _ resolve: (String) -> TemplateValue?
     ) -> (title: String, subtitle: String, body: String) {
@@ -202,27 +232,36 @@ struct AttentionFleetObservation: Equatable {
         }
         if fields.title.isEmpty {
             if fields.subtitle.isEmpty {
-                fields.title = fields.body
-                fields.body = ""
+                fields.title = fields.body.isEmpty ? "" : fields.body.removeFirst()
             } else {
                 fields.title = fields.subtitle
                 fields.subtitle = ""
             }
         }
-        return fields
+        return (
+            title: fields.title,
+            subtitle: fields.subtitle,
+            body: fields.body.joined(separator: "\n")
+        )
     }
 
+    /// Renders the body as its surviving lines rather than one string, so the
+    /// caller can promote a line to the title. A line that renders empty is
+    /// left out, which is what keeps a body from carrying a blank line.
+    ///
     /// No field is trimmed here: renderText already drops the whole render's
     /// leading and trailing whitespace, so a template left with nothing but a
     /// discarded separator group yields the empty string.
     private static func render(
         _ templates: NotificationTemplates,
         _ resolve: (String) -> TemplateValue?
-    ) -> (title: String, subtitle: String, body: String) {
+    ) -> (title: String, subtitle: String, body: [String]) {
         (
             title: templates.title.renderText(resolve),
             subtitle: templates.subtitle.renderText(resolve),
-            body: templates.body.renderText(resolve)
+            body: templates.body
+                .map { $0.template.renderText(resolve) }
+                .filter { !$0.isEmpty }
         )
     }
 }

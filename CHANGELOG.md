@@ -6,6 +6,14 @@
 
 - The update dialog shows release notes.
 
+### Changed
+
+- The notification body takes any number of lines, and a line that renders
+  empty is left out.
+- `{excerpt}` works in notification templates, so a body line decides where the
+  excerpt goes. Saved templates gain that line where the excerpt used to be
+  added.
+
 ### Fixed
 
 - The working status no longer washes out in light mode.

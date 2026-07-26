@@ -1,10 +1,10 @@
-// Stages blocked/done notification delivery so the banner body can carry the
+// Stages blocked/done notification delivery so the banner can carry the
 // agent's current excerpt. AttentionStateMachine composes an AttentionNotice
 // at the status transition, but the excerpt cache is refreshed by a screen
 // read that starts on the same snapshot tick and completes later, so a notice
 // delivered immediately would carry the previous turn's text. Holding the
 // deliver effect until the pane's displayed excerpt changes — or a bounded
-// hold expires — lets the body carry the blocked question or the settled
+// hold expires — lets the banner carry the blocked question or the settled
 // final message instead.
 //
 // Effect contract: remove and removeAll pass through in batch order, and a
@@ -19,8 +19,11 @@
 // text differs from the text captured at staging releases immediately; the
 // hold expiry releases with whatever text is available then, which covers a
 // settled read that kept an already-correct cache and never fired a change.
-// The stager appends the excerpt as an additional body line and never edits
-// the composed title or subtitle.
+//
+// What the excerpt does to the notice belongs to the injected `render`: the
+// stager owns when a notice is released, and the caller owns the text it is
+// released with. A release with no excerpt available, and a render that
+// declines, both forward the notice as it was staged.
 
 import Foundation
 import Observation
@@ -52,16 +55,21 @@ final class AttentionNoticeStager {
     }
 
     private let excerptState: @MainActor (SourcePaneID) -> AgentExcerptState?
+    private let render: @MainActor (AttentionNotice, String) -> AttentionNotice?
     private let holdDuration: Duration
     private let forward: @MainActor ([AttentionEffect]) -> Void
     private var held: [AttentionNotificationID: HeldNotice] = [:]
 
+    /// - Parameter render: The notice to deliver for a staged notice and the
+    ///   excerpt text available at release. nil forwards the staged notice.
     init(
         excerptState: @escaping @MainActor (SourcePaneID) -> AgentExcerptState?,
+        render: @escaping @MainActor (AttentionNotice, String) -> AttentionNotice?,
         holdDuration: Duration = AttentionNoticeStager.defaultHoldDuration,
         forward: @escaping @MainActor ([AttentionEffect]) -> Void
     ) {
         self.excerptState = excerptState
+        self.render = render
         self.holdDuration = holdDuration
         self.forward = forward
     }
@@ -118,7 +126,7 @@ final class AttentionNoticeStager {
             let text = Self.displayText(
                 self.excerptState(heldNotice.notice.sourcePaneID)
             )
-            self.release(heldNotice, attaching: text)
+            self.release(heldNotice, excerpt: text)
         }
         observeExcerpt(for: heldNotice)
     }
@@ -139,7 +147,7 @@ final class AttentionNoticeStager {
                 }
                 let text = Self.displayText(self.excerptState(paneID))
                 if let text, text != heldNotice.stagedText {
-                    self.release(heldNotice, attaching: text)
+                    self.release(heldNotice, excerpt: text)
                 } else {
                     self.observeExcerpt(for: heldNotice)
                 }
@@ -147,11 +155,12 @@ final class AttentionNoticeStager {
         }
     }
 
-    private func release(_ heldNotice: HeldNotice, attaching text: String?) {
+    private func release(_ heldNotice: HeldNotice, excerpt text: String?) {
         heldNotice.expiryTask?.cancel()
         heldNotice.expiryTask = nil
         held.removeValue(forKey: heldNotice.notice.id)
-        forward([.deliver(Self.notice(heldNotice.notice, attaching: text))])
+        let notice = heldNotice.notice
+        forward([.deliver(text.flatMap { render(notice, $0) } ?? notice)])
     }
 
     private func discard(_ id: AttentionNotificationID) {
@@ -163,24 +172,5 @@ final class AttentionNoticeStager {
     private static func displayText(_ state: AgentExcerptState?) -> String? {
         guard case .available(let excerpt) = state else { return nil }
         return excerpt.text
-    }
-
-    private static func notice(
-        _ notice: AttentionNotice,
-        attaching text: String?
-    ) -> AttentionNotice {
-        guard let text else { return notice }
-        // The separator belongs between two lines. A body template that renders
-        // empty leaves the excerpt as the whole body, with no blank line above
-        // it eating one of the few rows a banner shows.
-        let body = notice.body.isEmpty ? text : notice.body + "\n" + text
-        return AttentionNotice(
-            id: notice.id,
-            sourcePaneID: notice.sourcePaneID,
-            threadIdentifier: notice.threadIdentifier,
-            title: notice.title,
-            subtitle: notice.subtitle,
-            body: body
-        )
     }
 }

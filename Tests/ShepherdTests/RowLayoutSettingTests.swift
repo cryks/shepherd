@@ -44,7 +44,10 @@ final class RowLayoutSettingTests: XCTestCase {
             notification: NotificationTemplates(
                 title: RowTemplate("{title}"),
                 subtitle: RowTemplate(""),
-                body: RowTemplate("{herdr.workspace.branch}")
+                body: [
+                    NotificationLine(RowTemplate("{herdr.agent.agent}")),
+                    NotificationLine(RowTemplate("{herdr.workspace.branch}")),
+                ]
             )
         )
 
@@ -104,7 +107,32 @@ final class RowLayoutSettingTests: XCTestCase {
         XCTAssertEqual(layout.lines.first?.leftStyle, .body)
         XCTAssertEqual(layout.lines.first?.rightStyle, .status)
         XCTAssertEqual(layout.lines.first?.left.source, "{title}")
-        XCTAssertEqual(layout.notification.body.source, "{herdr.agent.agent}")
+    }
+
+    /// A body stored as one template was delivered with the excerpt after it,
+    /// so reading it as two lines keeps the banner saying what it did.
+    @MainActor
+    func testASingleStoredBodyTemplateReadsWithAnExcerptLine() {
+        let defaults = makeDefaults()
+        let stored = """
+        {
+          "lines": [],
+          "linesByAgent": {},
+          "notification": {
+            "title": "{title}",
+            "subtitle": "",
+            "body": "{herdr.agent.agent}"
+          }
+        }
+        """
+        defaults.set(Data(stored.utf8), forKey: RowLayoutSetting.layoutKey)
+
+        let layout = RowLayoutSetting(defaults: defaults).layout
+
+        XCTAssertEqual(
+            layout.notification.body.map(\.template.source),
+            ["{herdr.agent.agent}", "{excerpt}"]
+        )
     }
 
     /// An isolated UserDefaults suite per test. The whole domain is removed at teardown.

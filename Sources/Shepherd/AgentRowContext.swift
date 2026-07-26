@@ -67,7 +67,8 @@ struct AgentRowContext: Equatable, Sendable {
     /// of its own: `{agent_icon}` and `{excerpt}` return nil, so they neither
     /// print nor satisfy a `{a|b}` alternative nor keep a `[...]` group. Every
     /// other name resolves exactly as in a row. Notification templates render
-    /// through this; AttentionNoticeStager appends the excerpt to the body.
+    /// through this, and AttentionNoticeStager renders them once more with the
+    /// pane's excerpt supplied for `{excerpt}`.
     @MainActor
     func textTemplateValue(for name: String) -> TemplateValue? {
         resolve(name, textOnly: true)

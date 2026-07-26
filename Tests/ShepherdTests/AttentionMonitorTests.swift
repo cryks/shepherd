@@ -371,6 +371,31 @@ final class AttentionMonitorTests: XCTestCase {
         XCTAssertFalse(fleetWithHiddenRemote.showsSourceLabels)
     }
 
+    /// The body is a list of lines: one that renders empty leaves no blank line
+    /// behind, and an empty title is filled from the first line that survived,
+    /// since the title is the field macOS always shows.
+    func testEmptyBodyLinesAreDroppedAndTheFirstOneFillsAnEmptyTitle() {
+        let values = ["agent": "codex", "branch": ""]
+        let templates = NotificationTemplates(
+            title: RowTemplate(""),
+            subtitle: RowTemplate(""),
+            body: [
+                NotificationLine(RowTemplate("[{branch}]")),
+                NotificationLine(RowTemplate("{agent}")),
+                NotificationLine(RowTemplate("waiting on you")),
+                NotificationLine(RowTemplate("{herdr.agent.title}")),
+            ]
+        )
+
+        let fields = AttentionFleetObservation.notificationFields(templates) { name in
+            values[name].map { TemplateValue.text($0) }
+        }
+
+        XCTAssertEqual(fields.title, "codex")
+        XCTAssertEqual(fields.subtitle, "")
+        XCTAssertEqual(fields.body, "waiting on you")
+    }
+
     @MainActor
     func testCoordinatorObservesFleetStoreSnapshotTransitions() async {
         let initialPane = pane(status: .working)

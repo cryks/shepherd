@@ -1,6 +1,6 @@
 // How an agent row is drawn and what a notification says, as a persisted
 // value: an ordered list of lines (each a left and a right template with its
-// own style), per-agent replacements of that list, and the three notification
+// own style), per-agent replacements of that list, and the notification
 // templates.
 //
 // RowLayoutSetting is the sole writer of the "AgentRowLayout" default. It holds
@@ -52,13 +52,70 @@ struct RowLine: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
-/// The three fields of a notification, rendered text-only. `{excerpt}` and
-/// `{agent_icon}` resolve empty here; AttentionNoticeStager appends the excerpt
-/// to the body itself.
+/// One line of a notification body.
+struct NotificationLine: Codable, Equatable, Sendable, Identifiable {
+    /// Identity for the settings editor's list and for SwiftUI diffing. It has
+    /// no meaning to rendering.
+    var id: UUID
+    var template: RowTemplate
+
+    init(id: UUID = UUID(), _ template: RowTemplate) {
+        self.id = id
+        self.template = template
+    }
+
+    /// Reads a bare template string as well as the keyed form, and generates
+    /// `id` when it is absent, so a hand-written body can be a plain list of
+    /// templates.
+    init(from decoder: any Decoder) throws {
+        if let source = try? decoder.singleValueContainer().decode(String.self) {
+            id = UUID()
+            template = RowTemplate(source)
+            return
+        }
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        template = try container.decode(RowTemplate.self, forKey: .template)
+    }
+}
+
+/// The fields of a notification, rendered text-only: `{agent_icon}` resolves
+/// empty. `{excerpt}` holds the pane's excerpt, which is read after the status
+/// transition, so AttentionNoticeStager is what renders these templates with a
+/// value for it.
+///
+/// macOS gives a banner one title and one subtitle, so those stay single
+/// templates. The body is a list: lines that render empty are dropped and the
+/// rest are joined with newlines, which is how a body says nothing about a
+/// branch when the pane has none.
 struct NotificationTemplates: Codable, Equatable, Sendable {
     var title: RowTemplate
     var subtitle: RowTemplate
-    var body: RowTemplate
+    var body: [NotificationLine]
+
+    init(title: RowTemplate, subtitle: RowTemplate, body: [NotificationLine]) {
+        self.title = title
+        self.subtitle = subtitle
+        self.body = body
+    }
+
+    /// A single template under `body` is the form stored before the body became
+    /// a list. It reads as that line followed by an `{excerpt}` line, because a
+    /// body stored that way was delivered with the excerpt after it, and the
+    /// list is now the only thing that says where the excerpt goes.
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        title = try container.decode(RowTemplate.self, forKey: .title)
+        subtitle = try container.decode(RowTemplate.self, forKey: .subtitle)
+        if let lines = try? container.decode([NotificationLine].self, forKey: .body) {
+            body = lines
+        } else {
+            body = [
+                NotificationLine(try container.decode(RowTemplate.self, forKey: .body)),
+                NotificationLine(RowTemplate("{excerpt}")),
+            ]
+        }
+    }
 }
 
 struct RowLayout: Codable, Equatable, Sendable {
@@ -94,7 +151,10 @@ struct RowLayout: Codable, Equatable, Sendable {
         notification: NotificationTemplates(
             title: RowTemplate("{status_emoji} {title|herdr.agent.agent}"),
             subtitle: RowTemplate("[{source} · ]{herdr.workspace.label|herdr.workspace.workspace_id}"),
-            body: RowTemplate("{herdr.agent.agent}[ · {herdr.workspace.branch}]")
+            body: [
+                NotificationLine(RowTemplate("{herdr.agent.agent}[ · {herdr.workspace.branch}]")),
+                NotificationLine(RowTemplate("{excerpt}")),
+            ]
         )
     )
 

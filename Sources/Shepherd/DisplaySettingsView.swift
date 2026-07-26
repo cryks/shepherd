@@ -1,6 +1,6 @@
 // The Display settings tab: an editor for RowLayout — the agent row's lines,
-// the per-agent replacements of that list, and the three notification
-// templates — beside a preview of the rows those templates produce.
+// the per-agent replacements of that list, and the notification templates —
+// beside a preview of the rows those templates produce.
 //
 // This pane is the only writer of RowLayoutSetting.shared.layout and the only
 // place that reports variable names no resolver knows. It owns no herdr state:
@@ -150,8 +150,8 @@ struct DisplaySettingsView: View {
                     tr("Notifications", ja: "通知"),
                     restore: .notifications,
                     footer: tr(
-                        "Notifications are text only: {excerpt} and {agent_icon} stay empty, and the excerpt is appended to the body.",
-                        ja: "通知はテキストのみです。{excerpt} と {agent_icon} は空になり、抜粋は本文の末尾に付きます。"
+                        "Notifications are text only, so {agent_icon} stays empty. A body line that renders empty is left out.",
+                        ja: "通知はテキストのみなので {agent_icon} は空になります。空になった本文の行は出ません。"
                     )
                 ) {
                     TemplateField(
@@ -166,10 +166,9 @@ struct DisplaySettingsView: View {
                         template: $layoutSetting.layout.notification.subtitle,
                         catalog: catalog
                     )
-                    TemplateField(
-                        label: tr("Body", ja: "本文"),
+                    NotificationBodyList(
+                        lines: $layoutSetting.layout.notification.body,
                         labelWidth: Self.notificationLabelWidth,
-                        template: $layoutSetting.layout.notification.body,
                         catalog: catalog
                     )
                 }
@@ -432,13 +431,75 @@ extension RowTextStyle {
     }
 }
 
+// MARK: - Notification body
+
+/// The notification body's lines: one template each, dragged into another order
+/// by the same grabber the row list uses, plus the button that appends a line.
+/// The label sits on the first line so it lines up with the Title and Subtitle
+/// labels above; the lines themselves are indented by their grabber column.
+private struct NotificationBodyList: View {
+    @Binding var lines: [NotificationLine]
+    let labelWidth: CGFloat
+    let catalog: TemplateVariableCatalog
+
+    @State private var reorder = RowReorder<UUID>()
+
+    private var label: String { tr("Body", ja: "本文") }
+
+    var body: some View {
+        ForEach($lines) { $line in
+            HStack(spacing: 6) {
+                Text(line.id == lines.first?.id ? label : "")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: labelWidth, alignment: .leading)
+
+                RowGrabber(
+                    id: line.id,
+                    order: lines.map(\.id),
+                    reorder: reorder,
+                    move: { lines.move(fromOffsets: $0, toOffset: $1) }
+                )
+
+                TemplateField(
+                    label: label,
+                    labelWidth: nil,
+                    template: $line.template,
+                    catalog: catalog
+                )
+
+                Button(role: .destructive) {
+                    lines.removeAll { $0.id == line.id }
+                } label: {
+                    Label(tr("Delete Line", ja: "行を削除"), systemImage: "trash")
+                }
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+            }
+            .reorderableRow(reorder, id: line.id)
+        }
+
+        Button {
+            lines.append(NotificationLine(RowTemplate("")))
+        } label: {
+            Label(tr("Add Line", ja: "行を追加"), systemImage: "plus")
+        }
+        .buttonStyle(.borderless)
+        .padding(.leading, labelWidth + 6)
+    }
+}
+
 // MARK: - Template field
 
 /// One template text field with its variable-insertion menu and the inline list
 /// of names no resolver knows.
 private struct TemplateField: View {
+    /// Names the field for the text field's placeholder and for assistive
+    /// technology, whether or not it is drawn.
     let label: String
-    let labelWidth: CGFloat
+    /// Width of the leading label column. nil draws no label, for a field whose
+    /// caller has put the label somewhere else in the row.
+    let labelWidth: CGFloat?
     @Binding var template: RowTemplate
     let catalog: TemplateVariableCatalog
 
@@ -455,10 +516,12 @@ private struct TemplateField: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
-                Text(label)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: labelWidth, alignment: .leading)
+                if let labelWidth {
+                    Text(label)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: labelWidth, alignment: .leading)
+                }
 
                 TextField(
                     label,
@@ -483,7 +546,7 @@ private struct TemplateField: View {
                 Text(unknownNamesWarning)
                     .font(.caption)
                     .foregroundStyle(.red)
-                    .padding(.leading, labelWidth + 6)
+                    .padding(.leading, labelWidth.map { $0 + 6 } ?? 0)
             }
         }
         .onChange(of: template) { rememberCaret() }

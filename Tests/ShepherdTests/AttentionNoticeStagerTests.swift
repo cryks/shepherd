@@ -4,6 +4,10 @@
 // remove/removeAll, and same-ID replacement. The lookup is backed by an
 // @Observable fixture so the tests drive the same withObservationTracking
 // path the app uses against FleetStore.
+//
+// The render closure stands in for the app's template rendering: it marks the
+// body with the excerpt it was handed, which is how these tests tell a released
+// notice from the staged one and see which excerpt reached the release.
 
 import Foundation
 import Observation
@@ -95,24 +99,25 @@ final class AttentionNoticeStagerTests: XCTestCase {
         ]])
     }
 
-    func testEmptyBodyTemplateLeavesTheExcerptAsTheWholeBody() async {
+    /// A pane that left the snapshot renders nothing, and the notice staged at
+    /// the transition is what gets delivered.
+    func testRenderDecliningLeavesTheStagedNotice() async {
         let fixture = ExcerptStateFixture()
         fixture.states[paneID] = .available(excerpt("May I edit main.swift?"))
         let sink = EffectSink()
         let stager = makeStager(
             fixture: fixture,
             sink: sink,
-            holdDuration: .milliseconds(50)
+            holdDuration: .milliseconds(50),
+            render: { _, _ in nil }
         )
 
         let released = expectation(description: "released on hold expiry")
         sink.onBatch = { released.fulfill() }
-        stager.apply([.deliver(makeNotice(body: ""))])
+        stager.apply([.deliver(makeNotice())])
         await fulfillment(of: [released], timeout: 2)
 
-        XCTAssertEqual(sink.batches, [[
-            .deliver(makeNotice(body: "May I edit main.swift?")),
-        ]])
+        XCTAssertEqual(sink.batches, [[.deliver(makeNotice())]])
     }
 
     func testHoldExpiryWithoutAvailableExcerptReleasesUnchangedBody() async {
@@ -202,12 +207,30 @@ final class AttentionNoticeStagerTests: XCTestCase {
     private func makeStager(
         fixture: ExcerptStateFixture,
         sink: EffectSink,
-        holdDuration: Duration = AttentionNoticeStager.defaultHoldDuration
+        holdDuration: Duration = AttentionNoticeStager.defaultHoldDuration,
+        render: (@MainActor (AttentionNotice, String) -> AttentionNotice?)? = nil
     ) -> AttentionNoticeStager {
         AttentionNoticeStager(
             excerptState: { fixture.state(for: $0) },
+            render: render ?? { Self.appendingExcerpt($0, $1) },
             holdDuration: holdDuration,
             forward: { sink.receive($0) }
+        )
+    }
+
+    /// Stands in for the app's template rendering by marking the body with the
+    /// excerpt it was handed.
+    private static func appendingExcerpt(
+        _ notice: AttentionNotice,
+        _ excerpt: String
+    ) -> AttentionNotice {
+        AttentionNotice(
+            id: notice.id,
+            sourcePaneID: notice.sourcePaneID,
+            threadIdentifier: notice.threadIdentifier,
+            title: notice.title,
+            subtitle: notice.subtitle,
+            body: notice.body + "\n" + excerpt
         )
     }
 

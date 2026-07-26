@@ -269,10 +269,19 @@ struct ShepherdApp: App {
         let store = FleetStore()
         let monitorNavigation = MonitorWindowNavigation()
         let notificationCenter = AgentNotificationCenter()
-        // The stager holds blocked/done delivers briefly so the banner body can
-        // include the pane's freshly read excerpt; see AttentionNoticeStager.
+        // The stager holds blocked/done delivers briefly, then renders the
+        // notice again with the pane's freshly read excerpt available to
+        // `{excerpt}`; see AttentionNoticeStager.
         let noticeStager = AttentionNoticeStager(
             excerptState: { [weak store] in store?.agentExcerptState(for: $0) },
+            render: { [weak store] notice, excerpt in
+                guard let store else { return nil }
+                return AttentionFleetObservation.rendered(
+                    notice,
+                    excerpt: excerpt,
+                    store: store
+                )
+            },
             forward: { notificationCenter.apply($0) }
         )
         let attentionMonitor = AttentionMonitor(store: store) { effects in

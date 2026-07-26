@@ -84,7 +84,7 @@ The rows ship as:
 | 2 | `{agent_icon\|herdr.agent.agent}[ {herdr.workspace.branch}]` | |
 | 3 | `{excerpt}` | |
 
-An override for one agent replaces that agent's whole line list. Notification titles, subtitles, and bodies take templates too, where `{excerpt}` and `{agent_icon}` render as nothing.
+An override for one agent replaces that agent's whole line list. Notification titles and subtitles take one template each, and the body takes a list of them — a line that renders empty is left out. `{agent_icon}` renders as nothing there.
 
 ## Pop-out window
 
