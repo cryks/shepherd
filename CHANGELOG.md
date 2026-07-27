@@ -16,6 +16,7 @@
 
 ### Fixed
 
+- Agent rows no longer change order between refreshes when pane IDs contain letters.
 - The working status no longer washes out in light mode.
 
 ## v0.13.0 - 2026-07-25

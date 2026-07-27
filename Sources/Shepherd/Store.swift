@@ -226,7 +226,8 @@ final class Store {
     /// A linked-worktree workspace does not get its own heading; its panes merge
     /// into the group of the workspace opening the same repo's root checkout (the
     /// heading is the root side's label). Within a group, panes are ordered by
-    /// workspace number then pane number, so root panes come before worktree panes.
+    /// workspace number then Herdr tab number, so root panes come before worktree
+    /// panes and each workspace follows the tab order shown by Herdr.
     /// Linked worktrees whose root checkout is not open as a workspace, and
     /// workspaces without a heading in the snapshot, appear under their own heading.
     var workspaceGroups: [(workspace: Workspace, panes: [Pane])] {
@@ -242,7 +243,10 @@ final class Store {
                     panes: group.panes.sorted { paneSortKey($0) < paneSortKey($1) }
                 )
             }
-            .sorted { $0.workspace.number < $1.workspace.number }
+            .sorted {
+                ($0.workspace.number, $0.workspace.workspaceId)
+                    < ($1.workspace.number, $1.workspace.workspaceId)
+            }
     }
 
     /// Verbatim herdr records addressed by the template language, for one
@@ -506,19 +510,29 @@ final class Store {
 
     // MARK: - Ordering
 
-    /// Sort key for panes within a group. A merged group mixes panes from multiple
-    /// workspaces, so the workspace number is the primary key to keep the
-    /// root → worktree order, and within the same workspace the pane number
-    /// approximates herdr's display order.
-    private func paneSortKey(_ pane: Pane) -> (Int, Int) {
-        (workspaces[pane.workspaceId]?.number ?? Int.max, paneNumber(pane))
+    /// Sort key for panes within a group. A merged group mixes panes from
+    /// multiple workspaces, so the workspace number keeps the root → worktree
+    /// order. Herdr's tab number is the display order within one workspace.
+    /// `pane_id` is an opaque stable identifier and makes the order total when a
+    /// tab contains multiple agent panes or the raw tab record is absent.
+    private func paneSortKey(_ pane: Pane) -> (Int, Int, String) {
+        (
+            workspaces[pane.workspaceId]?.number ?? Int.max,
+            tabNumber(for: pane),
+            pane.paneId
+        )
     }
 
-    /// "w11:p2" → 2. Uses the numeric part of the pane ID to approximate herdr's
-    /// display order. The ID suffix may contain letters, so unparsable IDs sort
-    /// to the end.
-    private func paneNumber(_ pane: Pane) -> Int {
-        guard let last = pane.paneId.split(separator: "p").last else { return Int.max }
-        return Int(last) ?? Int.max
+    /// Number of the tab containing this pane. `session.snapshot` keeps `tab_id`
+    /// on the agent record and `number` on the matching tab record; a missing or
+    /// out-of-range value sorts after numbered tabs.
+    private func tabNumber(for pane: Pane) -> Int {
+        guard case .ready(let snapshot) = state,
+              let agent = snapshot.raw.agents[pane.paneId],
+              case .string(let tabID)? = agent["tab_id"],
+              case .int(let number)? = snapshot.raw.tabs[tabID]?["number"] else {
+            return Int.max
+        }
+        return Int(exactly: number) ?? Int.max
     }
 }

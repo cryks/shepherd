@@ -35,8 +35,58 @@ final class WorktreeTests: XCTestCase {
         XCTAssertEqual(groups.count, 1)
         XCTAssertEqual(groups.first?.workspace.workspaceId, "w1")
         XCTAssertEqual(groups.first?.workspace.label, "shepherd")
-        // Workspace number takes precedence over pane number (p2 > p1), so the root's pane comes first.
+        // Workspace number takes precedence over pane ID, so the root pane
+        // comes first even though p2 sorts after p1.
         XCTAssertEqual(groups.first?.panes.map(\.paneId), ["w1:p2", "w2:p1"])
+    }
+
+    @MainActor
+    func testOpaquePaneIDをTab番号とPaneIDで安定して並べる() {
+        let raw = HerdrRawSnapshot(
+            agents: [
+                "w1:pT": .object([
+                    "pane_id": .string("w1:pT"),
+                    "tab_id": .string("w1:tD"),
+                ]),
+                "w1:pR": .object([
+                    "pane_id": .string("w1:pR"),
+                    "tab_id": .string("w1:tD"),
+                ]),
+                "w1:pV": .object([
+                    "pane_id": .string("w1:pV"),
+                    "tab_id": .string("w1:tA"),
+                ]),
+            ],
+            workspaces: [
+                "w1": .object(["workspace_id": .string("w1")]),
+            ],
+            tabs: [
+                "w1:tA": .object([
+                    "tab_id": .string("w1:tA"),
+                    "number": .int(10),
+                ]),
+                "w1:tD": .object([
+                    "tab_id": .string("w1:tD"),
+                    "number": .int(13),
+                ]),
+            ]
+        )
+        let store = Store(initialState: .ready(AgentSnapshot(
+            agents: [
+                makePane(id: "w1:pT", workspaceId: "w1"),
+                makePane(id: "w1:pR", workspaceId: "w1"),
+                makePane(id: "w1:pV", workspaceId: "w1"),
+            ],
+            workspaces: [
+                Workspace(workspaceId: "w1", label: "signage", number: 1),
+            ],
+            raw: raw
+        )))
+
+        XCTAssertEqual(
+            store.workspaceGroups.first?.panes.map(\.paneId),
+            ["w1:pV", "w1:pR", "w1:pT"]
+        )
     }
 
     @MainActor
