@@ -7,6 +7,10 @@
 - Display lines take a line count, so a long excerpt can wrap instead of
   truncating.
 
+### Changed
+
+- The monospace row style matches the body text size.
+
 ### Fixed
 
 - Codex rows no longer mistake unrecognized history cells for the reply.

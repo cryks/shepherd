@@ -421,7 +421,7 @@ private struct RowTextStyleModifier: ViewModifier {
         case .subdued:
             content.font(.callout).foregroundStyle(.secondary)
         case .monospace:
-            content.font(.caption.monospaced()).foregroundStyle(.secondary)
+            content.font(.callout.monospaced()).foregroundStyle(.secondary)
         case .status:
             // Native menus uniformly invert selected text to the selected
             // foreground color, so only while hovered in menu style we drop the
@@ -448,8 +448,8 @@ private extension RowTextStyle {
     var appKitTextStyle: NSFont.TextStyle {
         switch self {
         case .heading: .body
-        case .body, .subdued: .callout
-        case .monospace, .status: .caption1
+        case .body, .subdued, .monospace: .callout
+        case .status: .caption1
         }
     }
 }
