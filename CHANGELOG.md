@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Codex rows no longer mistake unrecognized history cells for the reply.
+
 ## v0.14.0 - 2026-07-30
 
 ### Added

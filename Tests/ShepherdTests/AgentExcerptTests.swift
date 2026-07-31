@@ -486,6 +486,85 @@ final class CodexAgentExcerptTests: XCTestCase {
         )
     }
 
+    func testSeparatorSelectsMessageAheadOfUnknownTrailingCell() throws {
+        var machine = try makeMachine("codex")
+
+        XCTAssertEqual(
+            machine.ingest(input(
+                .working,
+                140,
+                Fixtures.codexSeparatorLedResponse
+            )),
+            .replace(excerpt(
+                "Preview reads settle after two matching captures, "
+                    + "so the row keeps the reply.",
+                kind: .response,
+                confidence: .medium,
+                revision: 140
+            ))
+        )
+    }
+
+    func testLabeledSeparatorSelectsMessage() throws {
+        var machine = try makeMachine("codex")
+
+        XCTAssertEqual(
+            machine.ingest(input(
+                .working,
+                141,
+                Fixtures.codexLabeledSeparatorResponse
+            )),
+            .replace(excerpt(
+                "The build pipeline caches intermediate artifacts "
+                    + "between runs.",
+                kind: .response,
+                confidence: .medium,
+                revision: 141
+            ))
+        )
+    }
+
+    func testAnchorlessScreenKeepsCachedResponse() throws {
+        var machine = try makeMachine("codex")
+        _ = machine.ingest(input(
+            .working,
+            143,
+            Fixtures.codexSeparatorLedResponse
+        ))
+
+        XCTAssertEqual(
+            machine.ingest(input(
+                .working,
+                144,
+                Fixtures.codexAnchorlessTrailingCell
+            )),
+            .keep
+        )
+        XCTAssertEqual(
+            machine.excerpt?.text,
+            "Preview reads settle after two matching captures, "
+                + "so the row keeps the reply."
+        )
+    }
+
+    func testSeparatorBeforeAnswerStreamKeepsPriorResponse() throws {
+        var machine = try makeMachine("codex")
+
+        XCTAssertEqual(
+            machine.ingest(input(
+                .working,
+                142,
+                Fixtures.codexSeparatorBeforeAnswerStream
+            )),
+            .replace(excerpt(
+                "The previous turn left this response visible.",
+                kind: .response,
+                confidence: .medium,
+                revision: 142
+            ))
+        )
+    }
+
     func testIncoherentStatusPairContributesNoEvidence() throws {
         var machine = try makeMachine("codex")
         let incoherent = AgentExcerptInput(
@@ -1162,6 +1241,8 @@ private enum Fixtures {
     • Explored
       └ Read Sources/App/Preview.swift
 
+    ────────────────────────────────────────
+
     • Preview now keeps the latest completed reply while tools are
       running.
 
@@ -1173,6 +1254,8 @@ private enum Fixtures {
     static let codexBlockerWordsResponse = """
     • Explored
       └ Read Sources/App/Preview.swift
+
+    ────────────────────────────────────────
 
     • Treat “Press enter to confirm or esc to cancel” as normal prose
       unless the agent is blocked.
@@ -1228,6 +1311,8 @@ private enum Fixtures {
     """
 
     static let codexWorkingWithPriorResponse = """
+    ────────────────────────────────────────
+
     • The previous turn left this response visible.
 
     • Checking extraction paths (2s • esc to interrupt)
@@ -1238,6 +1323,8 @@ private enum Fixtures {
     """
 
     static let codexToolOnlyWithPriorResponse = """
+    ────────────────────────────────────────
+
     • The previous turn left this response visible.
 
     • Explored
@@ -1251,6 +1338,8 @@ private enum Fixtures {
     static let codexVerbResponse = """
     • Explored
       └ Read Sources/App/Preview.swift
+
+    ────────────────────────────────────────
 
     • Working with remote panes requires an endpoint-scoped reader.
 
@@ -1298,6 +1387,8 @@ private enum Fixtures {
 
     • Searched terminal preview extraction patterns
 
+    ────────────────────────────────────────
+
     • Final response.
 
     › Add preview support
@@ -1309,6 +1400,8 @@ private enum Fixtures {
 
     • Waited for background terminal · swift test
 
+    ────────────────────────────────────────
+
     • Streaming response.
 
     › Add preview support
@@ -1317,6 +1410,8 @@ private enum Fixtures {
     static let codexViewerVocabularyResponse = """
     • Explored
       └ Read Sources/App/Preview.swift
+
+    ────────────────────────────────────────
 
     • Document ↑/↓ to scroll, pgup/pgdn to page, home/end to jump,
       and q to quit.
@@ -1336,10 +1431,12 @@ private enum Fixtures {
         """
     }
 
+    // A conversational turn: no tool work, so no separator — the message
+    // sits below the user prompt echo.
     static let codexStatusLikeResponse = """
-    • Explain this hint (press Esc to interrupt)
-
     › Add preview support
+
+    • Explain this hint (press Esc to interrupt)
     """
 
     // Models the current Codex TUI after a long turn: the response's leading
@@ -1387,6 +1484,68 @@ private enum Fixtures {
       › 2. ログ調査      失敗の原因を先に調べるよ。
 
       tab to add notes | enter to submit answer | esc to interrupt
+    """
+
+    // A message below the turn separator, with a history cell whose title
+    // the extractor does not recognize after it.
+    static let codexSeparatorLedResponse = """
+    • Ran git status
+      └ (no output)
+
+    ────────────────────────────────────────
+
+    • Preview reads settle after two matching captures, so the row
+      keeps the reply.
+
+    • Recorded session trace
+
+    › Add preview support
+
+      tab to queue message                         97% context left
+    """
+
+    // The labelled separator Codex draws once a turn ran longer than a
+    // minute.
+    static let codexLabeledSeparatorResponse = """
+    • Ran make build
+      └ Build complete
+
+    ─ Worked for 5m 3s ─────────────────────
+
+    • The build pipeline caches intermediate artifacts between runs.
+
+    › Speed up the build
+
+      tab to queue message                         96% context left
+    """
+
+    // The separator is drawn but the message has not streamed yet: the live
+    // status is the first line below it.
+    static let codexSeparatorBeforeAnswerStream = """
+    ────────────────────────────────────────
+
+    • The previous turn left this response visible.
+
+    • Ran make test
+      └ 12 tests passed
+
+    ────────────────────────────────────────
+
+    • Composing summary (3s • esc to interrupt)
+
+    › Summarize the results
+
+      tab to queue message                         95% context left
+    """
+
+    // Every anchor scrolled above the viewport; the unrecognized history
+    // cell must not be mistaken for the message.
+    static let codexAnchorlessTrailingCell = """
+    • Recorded session trace
+
+    › Add preview support
+
+      tab to queue message                         96% context left
     """
 
     static let claudeWorking = """

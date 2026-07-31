@@ -1091,6 +1091,8 @@ private enum TerminalScreens {
     • Explored
       └ Read Sources/App/Preview.swift
 
+    ────────────────────────────────────────
+
     • Preview now keeps the latest completed reply while tools are
       running.
 

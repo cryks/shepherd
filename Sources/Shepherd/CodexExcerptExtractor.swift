@@ -1,9 +1,16 @@
 // Codex terminal grammar for AgentExcerptMachine. Codex interleaves assistant
 // prose, tool history, live activity, the composer, and status chrome in one
-// transcript. A leading bullet alone does not mark prose: this parser accepts
-// a block only when it is neither a known tool/action block nor a live
-// "(... esc to interrupt)" status. The newest surviving block is the agent's
-// latest visible message, which the shared state machine caches best-effort.
+// transcript. Assistant messages appear in exactly two places: below the
+// user prompt echo ("› …" at column 0) on turns without tool work, and
+// below the separator Codex draws between a turn's tool work and the
+// message streamed after it (a full-width rule, or "─ Worked for … ─…"
+// once the turn ran longer than a minute). Only the first block below such
+// an anchor can be the message — a bulleted block with no anchor above it
+// is tool history or a system cell, however prose-like its title. An
+// anchor whose next block is a tool, system, or live-status block defers
+// to the anchor above it, so a prior turn's message stays selected while
+// new work streams below it. A message whose anchors scrolled off survives
+// as the orphan tail of the screen or through the machine's cache.
 
 import Foundation
 
@@ -11,13 +18,26 @@ enum CodexExcerptExtractor {
     private struct Block {
         var title: String
         var lines: [String]
+        /// Index of the block's marker line within the screen.
+        var startIndex: Int
     }
 
-    /// The newest visible prose block, skipping tool history, system cells,
-    /// and the live status line that follow it.
+    /// The newest assistant message on screen: the first block below the
+    /// newest anchor (prompt echo or turn separator) that is neither tool
+    /// history, a system cell, nor the live status line. Nil when no
+    /// visible anchor yields such a block.
     static func latestResponse(in screen: ExcerptScreen) -> String? {
-        for block in blocks(in: screen).reversed()
-        where !isLiveStatusTitle(block.title) && !isToolOrSystem(block) {
+        let blocks = blocks(in: screen)
+        for anchorIndex in anchorIndices(in: screen).reversed() {
+            guard let block = firstBlock(
+                after: anchorIndex,
+                in: screen,
+                blocks: blocks
+            ),
+                !isLiveStatusTitle(block.title),
+                !isToolOrSystem(block) else {
+                continue
+            }
             if let text = ExcerptText.compact(block.lines) {
                 return text
             }
@@ -25,13 +45,58 @@ enum CodexExcerptExtractor {
         return orphanHeadResponse(in: screen)
     }
 
+    /// Lines an assistant message can start below: user prompt echoes and
+    /// turn separators. The composer renders the same "› "/"» " prefix as
+    /// an echo but is only followed by footer chrome, so it matches here
+    /// and then yields no block.
+    private static func anchorIndices(in screen: ExcerptScreen) -> [Int] {
+        screen.lines.indices.filter { index in
+            let line = screen.lines[index]
+            return isTurnSeparator(line) || isPromptEcho(line)
+        }
+    }
+
+    /// A user message echoes at column 0 as "› message", with continuation
+    /// lines indented two spaces.
+    private static func isPromptEcho(_ line: String) -> Bool {
+        line.hasPrefix("› ") || line.hasPrefix("» ")
+    }
+
+    /// The block starting at the first column-0 line after `anchorIndex`.
+    /// Blank lines and two-space-indented lines (an echo's continuation
+    /// lines, footer chrome) do not end the walk. Nil when the walk ends
+    /// at a non-block line — the composer, another anchor — or at the
+    /// bottom edge.
+    private static func firstBlock(
+        after anchorIndex: Int,
+        in screen: ExcerptScreen,
+        blocks: [Block]
+    ) -> Block? {
+        for index in (anchorIndex + 1)..<screen.lines.endIndex {
+            let line = screen.lines[index]
+            if line.isEmpty || line.hasPrefix("  ") {
+                continue
+            }
+            return blocks.first { $0.startIndex == index }
+        }
+        return nil
+    }
+
+    /// Both separator forms Codex draws at column 0: a plain full-width
+    /// rule, and the labelled "─ Worked for 20m 25s ────" shape whose text
+    /// breaks the all-rule-characters test.
+    private static func isTurnSeparator(_ line: String) -> Bool {
+        ExcerptText.isHorizontalRule(line) ||
+            (line.hasPrefix("─ ") && line.hasSuffix("─"))
+    }
+
     /// A message longer than the viewport leaves only its continuation lines
     /// on screen: the `•` head is above the top edge, so no block is parsed.
     /// Those leading two-space-indented lines are the tail of the newest
     /// message; the last paragraph before the first marker, divider (such as
     /// "─ Worked for 20m 25s ─…"), or composer line carries its conclusion.
-    /// Consulted only when no complete prose block is visible, so a complete
-    /// newer block always wins.
+    /// Consulted only when no anchor yields a message, so an anchored block
+    /// always wins.
     private static func orphanHeadResponse(in screen: ExcerptScreen) -> String? {
         var paragraphs: [[String]] = []
         var paragraph: [String] = []
@@ -138,7 +203,11 @@ enum CodexExcerptExtractor {
                 next += 1
             }
 
-            result.append(Block(title: title, lines: blockLines))
+            result.append(Block(
+                title: title,
+                lines: blockLines,
+                startIndex: index
+            ))
             index = max(next, index + 1)
         }
         return result
