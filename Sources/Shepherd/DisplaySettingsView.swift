@@ -357,9 +357,9 @@ private struct RowLineList: View {
 }
 
 /// One line: the grabber it is dragged by, its left and right template with a
-/// style each, and the button that removes it. A line whose two sides both
-/// render empty is dropped by the row itself, so there is nothing to warn
-/// about here.
+/// style each, the stepper for how many lines the left side may wrap across,
+/// and the button that removes it. A line whose two sides both render empty is
+/// dropped by the row itself, so there is nothing to warn about here.
 private struct RowLineEditor: View {
     @Binding var line: RowLine
     let grabber: RowGrabber<UUID>
@@ -388,12 +388,29 @@ private struct RowLineEditor: View {
                 )
             }
 
+            // Five lines outruns the 240-character excerpt cap at menu width,
+            // so a larger count would only reserve blank height.
+            Stepper(value: $line.maxLines, in: 1...5) {
+                Text(lineCountLabel)
+            }
+            .fixedSize()
+            .help(tr(
+                "Lines the left side may wrap across",
+                ja: "左側を折り返して表示する行数"
+            ))
+
             Button(role: .destructive, action: onDelete) {
                 Label(tr("Delete Line", ja: "行を削除"), systemImage: "trash")
             }
             .labelStyle(.iconOnly)
             .buttonStyle(.borderless)
         }
+    }
+
+    private var lineCountLabel: String {
+        line.maxLines == 1
+            ? tr("1 line", ja: "1行")
+            : tr("\(line.maxLines) lines", ja: "\(line.maxLines)行")
     }
 
     private func side(

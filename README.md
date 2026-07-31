@@ -45,7 +45,7 @@ defaults write io.github.cryks.shepherd TerminalBundleID <bundle id>
 
 ## Customizing rows
 
-The Display settings tab decides what each row shows. A row is a list of lines, and every line has a left and a right side written as a template.
+The Display settings tab decides what each row shows. A row is a list of lines, and every line has a left and a right side written as a template. Every line also has a wrap count; only the left side wraps across that many lines.
 
 | Syntax | Meaning |
 |---|---|

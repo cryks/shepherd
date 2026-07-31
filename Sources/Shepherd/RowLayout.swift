@@ -25,23 +25,32 @@ struct RowLine: Codable, Equatable, Sendable, Identifiable {
     var leftStyle: RowTextStyle
     var right: RowTemplate
     var rightStyle: RowTextStyle
+    /// How many lines the left side's text may wrap across before it
+    /// truncates. The right side always stays on the first line, so status
+    /// text cannot push the row taller. On the reserved {excerpt} line, menu
+    /// rows keep this many lines of height in every state.
+    var maxLines: Int
 
     init(
         id: UUID = UUID(),
         left: RowTemplate,
         leftStyle: RowTextStyle,
         right: RowTemplate,
-        rightStyle: RowTextStyle
+        rightStyle: RowTextStyle,
+        maxLines: Int = 1
     ) {
         self.id = id
         self.left = left
         self.leftStyle = leftStyle
         self.right = right
         self.rightStyle = rightStyle
+        self.maxLines = maxLines
     }
 
     /// `id` is generated when the stored JSON omits it, so a hand-written
-    /// layout only has to name the templates and their styles.
+    /// layout only has to name the templates and their styles. `maxLines`
+    /// reads absent or sub-1 values as 1, so a layout stored before lines
+    /// had a count, and a hand-edited count of 0, both keep a single line.
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
@@ -49,6 +58,10 @@ struct RowLine: Codable, Equatable, Sendable, Identifiable {
         leftStyle = try container.decode(RowTextStyle.self, forKey: .leftStyle)
         right = try container.decode(RowTemplate.self, forKey: .right)
         rightStyle = try container.decode(RowTextStyle.self, forKey: .rightStyle)
+        maxLines = max(
+            1,
+            try container.decodeIfPresent(Int.self, forKey: .maxLines) ?? 1
+        )
     }
 }
 

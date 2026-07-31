@@ -241,9 +241,11 @@ struct AgentRow: View {
         left: [TemplateRun],
         right: [TemplateRun]
     ) -> some View {
-        HStack(spacing: 6) {
+        // .top keeps the right side beside the first line when the left side
+        // wraps across line.maxLines rows.
+        HStack(alignment: .top, spacing: 6) {
             runsView(left, style: line.leftStyle)
-                .lineLimit(1)
+                .lineLimit(line.maxLines)
                 .truncationMode(.tail)
             // A line with an empty right template spends none of its width on
             // the gap, so the left side truncates at the same column it would
@@ -261,9 +263,10 @@ struct AgentRow: View {
 
     /// Menu rows keep this line's metrics mounted for every excerpt state,
     /// preventing the panel from resizing when the first Excerpt arrives. The
-    /// placeholder alone decides the height in all three states; while loading
-    /// it is also what the row shows, so a line mixing {excerpt} with other
-    /// variables displays only the placeholder until text arrives.
+    /// placeholder alone decides the height in all three states — it reserves
+    /// line.maxLines rows, so a wrapping excerpt cannot grow the panel either;
+    /// while loading it is also what the row shows, so a line mixing {excerpt}
+    /// with other variables displays only the placeholder until text arrives.
     @ViewBuilder
     private func reservedExcerptLine(
         _ line: RowLine,
@@ -273,35 +276,36 @@ struct AgentRow: View {
     ) -> some View {
         switch state {
         case .loading:
-            excerptPlaceholder(style: line.leftStyle)
+            excerptPlaceholder(line)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityLabel("Excerpt")
                 .accessibilityValue("Loading")
         case .available(let excerpt):
-            excerptPlaceholder(style: line.leftStyle)
+            excerptPlaceholder(line)
                 .hidden()
                 .frame(maxWidth: .infinity, alignment: .leading)
                 // Overlay content does not participate in vertical measurement,
                 // so fallback glyph metrics cannot resize the menu after the
-                // placeholder is replaced.
-                .overlay(alignment: .leading) {
+                // placeholder is replaced. topLeading starts an excerpt shorter
+                // than the reserved rows at the first one instead of centering.
+                .overlay(alignment: .topLeading) {
                     lineContent(line, left: left, right: right)
                 }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Excerpt")
                 .accessibilityValue(excerpt.text)
         case .empty:
-            excerptPlaceholder(style: line.leftStyle)
+            excerptPlaceholder(line)
                 .hidden()
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityHidden(true)
         }
     }
 
-    private func excerptPlaceholder(style: RowTextStyle) -> some View {
+    private func excerptPlaceholder(_ line: RowLine) -> some View {
         Text("Loading…")
-            .lineLimit(1)
-            .modifier(rowTextStyle(style))
+            .lineLimit(line.maxLines, reservesSpace: true)
+            .modifier(rowTextStyle(line.leftStyle))
     }
 
     private func readsExcerpt(_ line: RowLine) -> Bool {

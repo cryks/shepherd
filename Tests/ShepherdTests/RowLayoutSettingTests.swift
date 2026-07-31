@@ -1,5 +1,6 @@
 // Pins the storage contract of the row layout preference: an edited layout
-// survives a relaunch with its line order and per-side styles intact, an absent
+// survives a relaunch with its line order, per-side styles, and line counts
+// intact, an absent
 // key leaves storage untouched, and neither undecodable data nor a style name
 // this build does not know can cost the user more than the one side that names
 // it. Each test owns a UserDefaults suite, so nothing here reads or writes the
@@ -28,7 +29,8 @@ final class RowLayoutSettingTests: XCTestCase {
                     left: RowTemplate("{excerpt}"),
                     leftStyle: .heading,
                     right: RowTemplate(""),
-                    rightStyle: .subdued
+                    rightStyle: .subdued,
+                    maxLines: 3
                 ),
             ],
             linesByAgent: [
@@ -107,6 +109,43 @@ final class RowLayoutSettingTests: XCTestCase {
         XCTAssertEqual(layout.lines.first?.leftStyle, .body)
         XCTAssertEqual(layout.lines.first?.rightStyle, .status)
         XCTAssertEqual(layout.lines.first?.left.source, "{title}")
+    }
+
+    /// A layout stored before lines had a count, and a hand-edited count of 0,
+    /// both read as a single-line row.
+    @MainActor
+    func testAbsentOrSubOneMaxLinesReadsAsOne() {
+        let defaults = makeDefaults()
+        let stored = """
+        {
+          "lines": [
+            {
+              "left": "{title}",
+              "leftStyle": "body",
+              "right": "",
+              "rightStyle": "body"
+            },
+            {
+              "left": "{excerpt}",
+              "leftStyle": "monospace",
+              "right": "",
+              "rightStyle": "monospace",
+              "maxLines": 0
+            }
+          ],
+          "linesByAgent": {},
+          "notification": {
+            "title": "{title}",
+            "subtitle": "",
+            "body": "{herdr.agent.agent}"
+          }
+        }
+        """
+        defaults.set(Data(stored.utf8), forKey: RowLayoutSetting.layoutKey)
+
+        let layout = RowLayoutSetting(defaults: defaults).layout
+
+        XCTAssertEqual(layout.lines.map(\.maxLines), [1, 1])
     }
 
     /// A body stored as one template was delivered with the excerpt after it,

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- Display lines take a line count, so a long excerpt can wrap instead of
+  truncating.
+
 ### Fixed
 
 - Codex rows no longer mistake unrecognized history cells for the reply.
