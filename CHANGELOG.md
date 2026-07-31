@@ -14,6 +14,8 @@
 ### Fixed
 
 - Codex rows no longer mistake unrecognized history cells for the reply.
+- Menu excerpts show every configured line instead of sometimes truncating
+  one line early.
 
 ## v0.14.0 - 2026-07-30
 

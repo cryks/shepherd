@@ -289,7 +289,16 @@ struct AgentRow: View {
                 // placeholder is replaced. topLeading starts an excerpt shorter
                 // than the reserved rows at the first one instead of centering.
                 .overlay(alignment: .topLeading) {
+                    // fixedSize: the overlay proposes the placeholder's laid-out
+                    // height, which pixel alignment can leave a fraction below
+                    // what maxLines wrapped lines need (45.0pt snaps to 44.5pt
+                    // at 2x for proportional callout); Text answers such a
+                    // proposal by dropping a whole line and truncating early.
+                    // Ignoring the height proposal draws all maxLines rows; any
+                    // overflow past the reserved box stays sub-pixel because
+                    // both sides use the same font metrics.
                     lineContent(line, left: left, right: right)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Excerpt")
