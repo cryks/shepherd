@@ -1096,6 +1096,83 @@ final class ClaudeAgentExcerptTests: XCTestCase {
         )
     }
 
+    func testScrolledBackViewportKeepsCache() throws {
+        var freshMachine = try makeMachine("claude")
+        XCTAssertEqual(
+            freshMachine.ingest(input(
+                .working,
+                130,
+                Fixtures.claudeScrolledBackNewMessage
+            )),
+            .keep
+        )
+        XCTAssertNil(freshMachine.excerpt)
+
+        var cachedMachine = try makeMachine("claude")
+        _ = cachedMachine.ingest(input(
+            .working,
+            131,
+            Fixtures.claudeWorkingWithPriorResponse
+        ))
+        XCTAssertEqual(
+            cachedMachine.ingest(input(
+                .working,
+                132,
+                Fixtures.claudeScrolledBackNewMessage
+            )),
+            .keep
+        )
+        XCTAssertEqual(
+            cachedMachine.excerpt?.text,
+            "Preview now keeps the latest completed reply while tools are running."
+        )
+
+        // A settled scrolled-back screen must not enter the two-read
+        // verification with the historical prose it shows.
+        var settledMachine = try makeMachine("claude")
+        XCTAssertEqual(
+            settledMachine.ingest(input(
+                .idle,
+                133,
+                Fixtures.claudeScrolledBackJumpToBottom
+            )),
+            .keep
+        )
+        XCTAssertEqual(
+            settledMachine.ingest(input(
+                .idle,
+                133,
+                Fixtures.claudeScrolledBackJumpToBottom
+            )),
+            .keep
+        )
+        XCTAssertNil(settledMachine.excerpt)
+        XCTAssertFalse(settledMachine.requiresVerificationRead)
+    }
+
+    func testScrollbackIndicatorWordsInsideAMessageAreNotSuppressed() throws {
+        var machine = try makeMachine("claude")
+        _ = machine.ingest(input(
+            .idle,
+            134,
+            Fixtures.claudeScrollbackWordsResponse
+        ))
+
+        XCTAssertEqual(
+            machine.ingest(input(
+                .idle,
+                134,
+                Fixtures.claudeScrollbackWordsResponse
+            )),
+            .replace(excerpt(
+                "The overlay draws “Jump to bottom (click) ↓” over the middle of the bottom transcript row.",
+                kind: .response,
+                confidence: .medium,
+                revision: 134
+            ))
+        )
+    }
+
     func testSettledScreenPublishesNewestVisibleMessageWithoutAnchor() throws {
         // Best-effort contract: a settled screen's newest visible message is
         // cached even when the preceding working screens never showed it.
@@ -1946,6 +2023,52 @@ private enum Fixtures {
       continuation lines remain visible.
 
       The tail paragraph carries the conclusion.
+
+    ────────────────────────────────────────────────────────
+    ❯
+    ────────────────────────────────────────────────────────
+      ? for shortcuts
+    """
+
+    // A scrolled-back viewport: Claude draws the new-message indicator
+    // centered over the bottom transcript row, replacing the characters
+    // it covers, so the row's own text resumes after the overlay. Every
+    // row above it is history.
+    static let claudeScrolledBackNewMessage = """
+    ❯ Add preview support
+
+    ⏺ Reading the preview sources!
+
+      Read 1 file, listed 1 directory
+
+    ⏺ Preview keeps the latest c 1 new message (click) ↓  ols run.
+
+    ────────────────────────────────────────────────────────
+    ❯
+    ────────────────────────────────────────────────────────
+      ? for shortcuts
+    """
+
+    // The no-new-rows form of the overlay, landing past the end of a
+    // short duration-footer row so nothing resumes after it.
+    static let claudeScrolledBackJumpToBottom = """
+    ❯ Add preview support
+
+    ⏺ Preview reads settle after two matching captures.
+
+    ✻ Cogitated for 4s                          Jump to bottom (click) ↓
+
+    ────────────────────────────────────────────────────────
+    ❯
+    ────────────────────────────────────────────────────────
+      ? for shortcuts
+    """
+
+    // Indicator vocabulary inside a message: the quoted overlay text is
+    // not on the row directly above the composer's top rule.
+    static let claudeScrollbackWordsResponse = """
+    ⏺ The overlay draws “Jump to bottom (click) ↓” over the middle
+      of the bottom transcript row.
 
     ────────────────────────────────────────────────────────
     ❯

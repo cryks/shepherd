@@ -190,6 +190,7 @@ enum ClaudeExcerptExtractor {
     }
 
     static func isSuppressed(_ screen: ExcerptScreen) -> Bool {
+        if isScrolledBack(screen) { return true }
         let nonEmptyLines = screen.lines
             .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         let transcriptText = nonEmptyLines
@@ -213,6 +214,43 @@ enum ClaudeExcerptExtractor {
             !menuText.contains("do you want to proceed?") &&
             !menuText.contains("enter to select")
         return isTranscriptViewer || isModelPicker
+    }
+
+    /// While the viewport sits above the transcript tail, Claude draws a
+    /// horizontally centered indicator over the bottom transcript row:
+    /// "Jump to bottom (click) ↓", or "<n> new message(s) (click) ↓" when
+    /// rows arrived below the viewport. Such a screen shows history, and
+    /// the overlay replaces the characters it covers, so extraction would
+    /// both revive an old message and splice the indicator text into it.
+    ///
+    /// The bottom transcript row is the nearest non-empty row above the
+    /// rule that tops the composer box. Anchoring there keeps indicator
+    /// text quoted elsewhere in a message from matching; history prompt
+    /// echoes also start with "❯" but have no rule directly above them.
+    private static func isScrolledBack(_ screen: ExcerptScreen) -> Bool {
+        let lines = screen.lines
+        guard let composer = lines.lastIndex(where: { $0.hasPrefix("❯") }),
+              composer > lines.startIndex,
+              ExcerptText.isHorizontalRule(lines[composer - 1]) else {
+            return false
+        }
+        guard let bottomRow = lines[..<(composer - 1)].lastIndex(where: {
+            !$0.trimmingCharacters(in: .whitespaces).isEmpty
+        }) else {
+            return false
+        }
+        return containsScrollbackIndicator(lines[bottomRow])
+    }
+
+    /// The overlay can land mid-line with covered content resuming after
+    /// it, so the indicator is matched anywhere within the row.
+    private static func containsScrollbackIndicator(_ line: String) -> Bool {
+        if line.contains("Jump to bottom (click) ↓") { return true }
+        guard let range = line.range(of: " new message") else { return false }
+        var rest = line[range.upperBound...]
+        if rest.hasPrefix("s") { rest = rest.dropFirst() }
+        guard rest.hasPrefix(" (click) ↓") else { return false }
+        return line[..<range.lowerBound].last?.isNumber == true
     }
 
     private static func blocks(in screen: ExcerptScreen) -> [Block] {
