@@ -51,7 +51,36 @@ final class HerdrProtocolTests: XCTestCase {
                   "active_pane_id": "w1:p1"
                 }
               ],
-              "panes": [],
+              "panes": [
+                {
+                  "pane_id": "w1:p1",
+                  "terminal_id": "terminal-1",
+                  "workspace_id": "w1",
+                  "tab_id": "w1:t1",
+                  "focused": true,
+                  "agent": "codex",
+                  "agent_status": "blocked",
+                  "scroll": {
+                    "offset_from_bottom": 26,
+                    "max_offset_from_bottom": 122,
+                    "viewport_rows": 40
+                  },
+                  "revision": 7
+                },
+                {
+                  "pane_id": "w1:p2",
+                  "terminal_id": "terminal-2",
+                  "workspace_id": "w1",
+                  "tab_id": "w1:t1",
+                  "focused": false,
+                  "scroll": {
+                    "offset_from_bottom": 0,
+                    "max_offset_from_bottom": 0,
+                    "viewport_rows": 40
+                  },
+                  "revision": 3
+                }
+              ],
               "layouts": [],
               "agents": [
                 {
@@ -98,6 +127,13 @@ final class HerdrProtocolTests: XCTestCase {
         XCTAssertEqual(result.snapshot.agents.first?.revision, 7)
         XCTAssertEqual(result.snapshot.agents.first?.agentStatus, .blocked)
         XCTAssertEqual(result.snapshot.agents.first?.tokens?.agentKind, "primary")
+        // Viewport scroll arrives only in the panes records; the agents
+        // records decode without it and agentsWithScroll() joins by pane_id.
+        XCTAssertNil(result.snapshot.agents.first?.scrollOffsetFromBottom)
+        XCTAssertEqual(
+            result.snapshot.agentsWithScroll().first?.scrollOffsetFromBottom,
+            26
+        )
     }
 
     func testRawSnapshotIndexesRecordsByWireIDsAndKeepsKeysVerbatim() throws {

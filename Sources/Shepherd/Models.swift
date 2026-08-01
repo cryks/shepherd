@@ -38,6 +38,13 @@ struct Pane: Codable, Identifiable, Equatable {
     /// it for live agents. Herdr does not advance it for every terminal write,
     /// so AgentReadMonitor uses each successful snapshot as a read opportunity.
     var revision: UInt64? = nil
+    /// Rows the terminal viewport sits above the newest buffer row; 0 when the
+    /// view is pinned to the tail. session.snapshot reports scroll only in its
+    /// panes records, so decoding an agents record leaves this nil;
+    /// HerdrSessionSnapshot.agentsWithScroll() fills it for AgentReadMonitor,
+    /// while display snapshots keep it nil so scroll movement alone cannot
+    /// make consecutive snapshots unequal.
+    var scrollOffsetFromBottom: Int? = nil
     /// Terminal title with decorations like spinners stripped. Used to show the
     /// agent's current work.
     var terminalTitleStripped: String?
@@ -47,6 +54,23 @@ struct Pane: Codable, Identifiable, Equatable {
     var tokens: PaneTokens?
 
     var id: String { paneId }
+}
+
+/// A panes element of session.snapshot. The panes records describe every
+/// terminal pane, agent or not; Shepherd reads only the identity and viewport
+/// scroll state here. Agent identity and status stay in the agents records
+/// that decode into Pane.
+struct SnapshotPane: Codable, Equatable {
+    var paneId: String
+    /// nil when herdr does not report scroll for this pane; treated as a
+    /// viewport pinned to the tail.
+    var scroll: PaneScroll?
+}
+
+/// Viewport scroll state of one pane.
+struct PaneScroll: Codable, Equatable {
+    /// Rows the viewport sits above the newest buffer row; 0 at the tail.
+    var offsetFromBottom: Int
 }
 
 /// The portion of the metadata herdr attaches to a pane that Shepherd reads.
@@ -109,12 +133,34 @@ struct HerdrSessionSnapshot: Codable {
     var protocolVersion: Int
     var agents: [Pane]
     var workspaces: [Workspace]
+    /// The panes records of the same capture, read only for viewport scroll.
+    var panes: [SnapshotPane]? = nil
 
     enum CodingKeys: String, CodingKey {
         case version
         case protocolVersion = "protocol"
         case agents
         case workspaces
+        case panes
+    }
+
+    /// agents with each pane's viewport scroll offset joined by pane_id from
+    /// the panes records. The join is a separate step rather than part of
+    /// decoding because only AgentReadMonitor consumes the joined form; the
+    /// published display snapshot keeps the plain agents.
+    func agentsWithScroll() -> [Pane] {
+        let offsets: [String: Int] = Dictionary(
+            (panes ?? []).compactMap { record in
+                record.scroll.map { (record.paneId, $0.offsetFromBottom) }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        guard !offsets.isEmpty else { return agents }
+        var joined = agents
+        for index in joined.indices {
+            joined[index].scrollOffsetFromBottom = offsets[joined[index].paneId]
+        }
+        return joined
     }
 }
 

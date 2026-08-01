@@ -4,8 +4,10 @@
 // the excerpt cache is already filled when a menu or Monitor surface opens:
 // a pane is read when its snapshot status differs from the last scheduled
 // read's status, then re-read at the policy's interval while it stays working
-// or blocked. Every read is reduced immediately to an AgentExcerptState; raw
-// terminal text is never retained.
+// or blocked. A pane whose viewport is scrolled above the buffer tail is not
+// read; the cached excerpt stays until the view returns to the tail. Every
+// read is reduced immediately to an AgentExcerptState; raw terminal text is
+// never retained.
 //
 // The excerpt preference is consulted through the injected policy closure on
 // every snapshot tick rather than through a push API: a disabled tick cancels
@@ -229,12 +231,21 @@ final class AgentReadMonitor {
 
     /// Decides whether one snapshot tick reads this record's screen.
     ///
+    /// A viewport scrolled above the buffer tail renders history: the CLI
+    /// keeps drawing its composer and new output at the tail while Herdr
+    /// shows rows above it, so a visible read would hand the extractor old
+    /// transcript rows as if they were current. Such a tick schedules
+    /// nothing and leaves coveredStatus untouched; a status change that
+    /// happens while scrolled therefore still triggers a read on the first
+    /// tick after the viewport returns to the tail.
+    ///
     /// Herdr's pane revision does not advance for each terminal write, so
     /// content changes are invisible in the snapshot itself. The triggers are:
     /// a status change since the last scheduled read (including a cleared
     /// coveredStatus after a failure) and the periodic re-read while the
     /// status stays working or blocked.
     private func scheduleFromSnapshot(_ record: Record) {
+        if (record.pane.scrollOffsetFromBottom ?? 0) > 0 { return }
         let status = record.pane.agentStatus
         if record.coveredStatus != status {
             schedule(record, reason: .snapshot)

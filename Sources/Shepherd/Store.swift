@@ -437,7 +437,7 @@ final class Store {
             }
             let branches = await fetchBranches(for: serverSnapshot)
             guard !Task.isCancelled, !hasBeenStopped else { return }
-            agentReadMonitor.update(panes: serverSnapshot.agents)
+            agentReadMonitor.update(panes: serverSnapshot.agentsWithScroll())
             publish(
                 AgentSnapshot(
                     agents: serverSnapshot.agents,

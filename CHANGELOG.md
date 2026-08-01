@@ -14,8 +14,8 @@
 ### Fixed
 
 - Codex rows no longer mistake unrecognized history cells for the reply.
-- Claude rows keep the latest excerpt while the pane is scrolled back,
-  instead of picking up history or the scrollback indicator text.
+- Claude and Codex rows keep the latest excerpt while the pane is scrolled
+  back, instead of picking up history or the scrollback indicator text.
 - Menu excerpts show every configured line instead of sometimes truncating
   one line early.
 

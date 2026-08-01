@@ -226,6 +226,69 @@ final class AgentReadMonitorTests: XCTestCase {
     }
 
     @MainActor
+    func testScrolledViewportSchedulesNoRead() async {
+        let script = ScriptedAgentReads([])
+        let monitor = makeMonitor(script)
+        defer { monitor.stop() }
+
+        let scrolledPane = pane(
+            status: .working,
+            revision: 10,
+            scrollOffsetFromBottom: 26
+        )
+        monitor.update(panes: [scrolledPane])
+        monitor.update(panes: [scrolledPane])
+        await drainMainActor()
+
+        let calls = await script.recordedCalls()
+        XCTAssertEqual(
+            calls,
+            [],
+            "A viewport above the buffer tail shows history, which must " +
+                "never reach the extractor"
+        )
+        XCTAssertEqual(monitor.excerptState(for: paneID), .loading)
+    }
+
+    @MainActor
+    func testStatusChangeWhileScrolledReadsAfterReturnToTail() async {
+        let script = ScriptedAgentReads([
+            transaction(
+                status: .working,
+                revision: 10,
+                text: TerminalScreens.codexWorking
+            ),
+            transaction(
+                status: .idle,
+                revision: 10,
+                text: TerminalScreens.codexWorking
+            ),
+        ])
+        let monitor = makeMonitor(script)
+        defer { monitor.stop() }
+
+        monitor.update(panes: [pane(status: .working, revision: 10)])
+        let firstRead = await waitForCompletedTransactions(1, in: script)
+        XCTAssertTrue(firstRead)
+
+        // The agent settles while the user is reading history: no read.
+        monitor.update(panes: [pane(
+            status: .idle,
+            revision: 10,
+            scrollOffsetFromBottom: 40
+        )])
+        await drainMainActor()
+        let callsWhileScrolled = await script.recordedCalls().count
+        XCTAssertEqual(callsWhileScrolled, 3)
+
+        // Back at the tail, the covered working status differs from idle,
+        // so this tick reads without waiting for another status change.
+        monitor.update(panes: [pane(status: .idle, revision: 10)])
+        let secondRead = await waitForCompletedTransactions(2, in: script)
+        XCTAssertTrue(secondRead)
+    }
+
+    @MainActor
     func testUnsupportedAgentMakesNoReadCalls() async {
         let script = ScriptedAgentReads([])
         let monitor = makeMonitor(script)
@@ -762,7 +825,8 @@ final class AgentReadMonitorTests: XCTestCase {
         agent: String = "codex",
         status: AgentStatus,
         revision: UInt64,
-        terminal: String? = nil
+        terminal: String? = nil,
+        scrollOffsetFromBottom: Int? = nil
     ) -> Pane {
         Pane(
             agent: agent,
@@ -771,6 +835,7 @@ final class AgentReadMonitorTests: XCTestCase {
             workspaceId: "w1",
             terminalId: terminal ?? terminalID,
             revision: revision,
+            scrollOffsetFromBottom: scrollOffsetFromBottom,
             terminalTitleStripped: "Preview task",
             tokens: PaneTokens(agentKind: "primary")
         )
