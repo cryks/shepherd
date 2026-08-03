@@ -25,24 +25,33 @@ struct HerdrRawSnapshot: Equatable, Sendable {
     var workspaces: [String: JSONValue]
     /// Keyed by `tab_id`.
     var tabs: [String: JSONValue]
+    /// `snapshot.protocol` of the same response. nil when the response did not
+    /// carry one. Read when the typed decode of the same line fails, so the
+    /// resulting error can name the server's protocol.
+    var serverProtocol: Int? = nil
 
     static let empty = HerdrRawSnapshot(agents: [:], workspaces: [:], tabs: [:])
 
     /// Decodes one whole `session.snapshot` RPC response line with default key
     /// decoding, so keys stay snake_case as the template language exposes them.
     ///
-    /// Reads `result.snapshot.agents`, `.workspaces`, and `.tabs`. A missing or
-    /// differently shaped array yields an empty map, and an element without a
-    /// string id is dropped, so a protocol addition can never fail a poll that
-    /// the typed decode accepted. Throws DecodingError only when the line is
-    /// not JSON at all.
+    /// Reads `result.snapshot.agents`, `.workspaces`, `.tabs`, and `.protocol`.
+    /// A missing or differently shaped array yields an empty map, and an
+    /// element without a string id is dropped, so a protocol addition can never
+    /// fail a poll that the typed decode accepted. Throws DecodingError only
+    /// when the line is not JSON at all.
     static func decode(responseLine: Data) throws -> HerdrRawSnapshot {
         let root = try JSONDecoder().decode(JSONValue.self, from: responseLine)
         let snapshot = root["result"]?["snapshot"]
+        var serverProtocol: Int?
+        if case .int(let value)? = snapshot?["protocol"] {
+            serverProtocol = Int(exactly: value)
+        }
         return HerdrRawSnapshot(
             agents: index(snapshot?["agents"], by: "pane_id"),
             workspaces: index(snapshot?["workspaces"], by: "workspace_id"),
-            tabs: index(snapshot?["tabs"], by: "tab_id")
+            tabs: index(snapshot?["tabs"], by: "tab_id"),
+            serverProtocol: serverProtocol
         )
     }
 

@@ -312,6 +312,43 @@ final class HerdrProtocolTests: XCTestCase {
         assertGetRequest(requests[2], target: "w1:p1")
     }
 
+    func testUnknownAgentStatusValueDecodesAsUnknown() throws {
+        let status = try makeDecoder().decode(
+            AgentStatus.self,
+            from: Data(#""paused""#.utf8)
+        )
+        XCTAssertEqual(status, .unknown)
+    }
+
+    func testSchemaIncompatibleSnapshotErrorNamesServerProtocol() async throws {
+        // A numeric pane_id fails the typed decode of the agents array while
+        // the lenient raw pass still reads snapshot.protocol.
+        let server = try TestAgentReadRPCServer(resultBodies: [
+            [
+                "type": "session_snapshot",
+                "snapshot": [
+                    "version": "9.9.9",
+                    "protocol": 99,
+                    "workspaces": [],
+                    "tabs": [],
+                    "panes": [],
+                    "layouts": [],
+                    "agents": [["pane_id": 1]],
+                ],
+            ],
+        ])
+        async let served = server.serveAll()
+        let dataSource = StoreDataSource.live(socketPath: server.socketPath)
+
+        do {
+            _ = try await dataSource.snapshot()
+            XCTFail("schema-incompatible snapshot decoded")
+        } catch let error as SnapshotSchemaError {
+            XCTAssertEqual(error.serverProtocol, 99)
+        }
+        _ = try await served
+    }
+
     private func assertGetRequest(
         _ data: Data,
         target: String,

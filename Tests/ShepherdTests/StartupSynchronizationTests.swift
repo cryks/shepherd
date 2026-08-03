@@ -100,9 +100,9 @@ final class StartupSynchronizationTests: XCTestCase {
     }
 
     @MainActor
-    func testSnapshotのProtocol不一致を公開しない() async {
+    func testProtocol不一致のSnapshotをWarning付きで公開する() async {
         let snapshots = ControlledCalls<SnapshotFetch>(count: 1, name: "session.snapshot")
-        let pane = makePane(id: "w1:p1", title: "Unsupported")
+        let pane = makePane(id: "w1:p1", title: "Optimistic")
         let store = makeStore(snapshots: snapshots)
         defer { snapshots.finish() }
 
@@ -116,6 +116,39 @@ final class StartupSynchronizationTests: XCTestCase {
             call: 0
         )
 
+        guard let published = await readySnapshot(from: store) else {
+            return XCTFail("Protocol不一致のsnapshotが公開されなかった")
+        }
+        XCTAssertEqual(published.panes, [pane.paneId: pane])
+        XCTAssertEqual(store.protocolWarning, Herdr.supportedProtocol + 1)
+    }
+
+    @MainActor
+    func testProtocol不一致中の疎通エラーで未対応にする() async {
+        let snapshots = ControlledCalls<SnapshotFetch>(count: 2, name: "session.snapshot")
+        let pane = makePane(id: "w1:p1", title: "Optimistic")
+        let store = makeStore(snapshots: snapshots, pollInterval: .milliseconds(10))
+        defer {
+            store.stop()
+            snapshots.finish()
+        }
+
+        store.start()
+        await fulfillment(of: [snapshots.started(0)], timeout: 1.0)
+        snapshots.succeed(
+            makeSnapshot(
+                panes: [pane],
+                protocolVersion: Herdr.supportedProtocol + 1
+            ),
+            call: 0
+        )
+        guard await readySnapshot(from: store) != nil else {
+            return XCTFail("Protocol不一致のsnapshotが公開されなかった")
+        }
+
+        await fulfillment(of: [snapshots.started(1)], timeout: 1.0)
+        snapshots.fail(StubError.transientSnapshot, call: 1)
+
         let becameMismatch = await waitUntil {
             guard case .protocolMismatch(Herdr.supportedProtocol + 1) = store.state else {
                 return false
@@ -124,6 +157,32 @@ final class StartupSynchronizationTests: XCTestCase {
         }
         XCTAssertTrue(becameMismatch)
         XCTAssertTrue(store.panes.isEmpty)
+        XCTAssertNil(store.protocolWarning)
+    }
+
+    @MainActor
+    func testSchemaErrorの持つProtocolで未対応にする() async {
+        let snapshots = ControlledCalls<SnapshotFetch>(count: 1, name: "session.snapshot")
+        let store = makeStore(snapshots: snapshots)
+        defer { snapshots.finish() }
+
+        store.start()
+        await fulfillment(of: [snapshots.started(0)], timeout: 1.0)
+        snapshots.fail(
+            SnapshotSchemaError(
+                serverProtocol: Herdr.supportedProtocol + 2,
+                underlying: StubError.transientSnapshot
+            ),
+            call: 0
+        )
+
+        let becameMismatch = await waitUntil {
+            guard case .protocolMismatch(Herdr.supportedProtocol + 2) = store.state else {
+                return false
+            }
+            return true
+        }
+        XCTAssertTrue(becameMismatch)
     }
 
     @MainActor

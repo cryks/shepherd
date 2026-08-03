@@ -19,6 +19,14 @@ import Foundation
 /// turns done back to idle, so this app keeps no read/unread tracking of its own.
 enum AgentStatus: String, Codable, Sendable {
     case idle, working, blocked, done, unknown
+
+    /// A status herdr adds in a future protocol decodes as unknown instead of
+    /// failing the whole snapshot, so optimistic monitoring across protocol
+    /// bumps keeps every pane visible.
+    init(from decoder: any Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = AgentStatus(rawValue: raw) ?? .unknown
+    }
 }
 
 /// An agents element of session.snapshot.

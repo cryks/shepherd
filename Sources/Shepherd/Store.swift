@@ -14,8 +14,10 @@
 //     the latest state, so RPCs do not pile up on a slow endpoint
 //   - snapshot returns agents and workspaces from the same server capture, plus
 //     the verbatim herdr records of that same response line for the template
-//     layer. It is published as ready from the first response after the protocol
-//     matches
+//     layer. It is published as ready from the first response that decodes. A
+//     server on a different protocol is still published, with protocolWarning
+//     exposing the version; a failed poll on such a server then reports
+//     protocolMismatch instead of disconnected
 //   - Branch names alone are not included in session.snapshot, so worktree.list is
 //     additionally fetched within the same poll for each workspace that has watched
 //     panes. One response returns branches for every workspace opening the same
@@ -103,7 +105,10 @@ enum StoreState: Equatable {
     case disconnected
     case synchronizing
     case ready(AgentSnapshot)
-    /// The server responded but its protocol differs from Herdr.supportedProtocol.
+    /// A poll failed on a server whose protocol differs from
+    /// Herdr.supportedProtocol — the mismatch is the likely cause, so it is
+    /// reported instead of a plain disconnect. While such a server still
+    /// answers, the store stays ready and protocolWarning carries the version.
     case protocolMismatch(Int)
 }
 
@@ -119,6 +124,15 @@ struct SnapshotFetch {
         self.session = session
         self.raw = raw
     }
+}
+
+/// session.snapshot answered, but the body no longer decodes into the typed
+/// models this app was written against. Carries the protocol the response
+/// named (read through the lenient raw pass) so the failure can be shown as
+/// an unsupported protocol rather than a dropped connection.
+struct SnapshotSchemaError: Error {
+    var serverProtocol: Int?
+    var underlying: Error
 }
 
 /// RPC boundary the Store reads through. Tests control response completion and
@@ -138,15 +152,31 @@ struct StoreDataSource: Sendable {
                 // One RPC, two decodes of its response line: makeDecoder() for
                 // the typed model, and a plain decoder for the raw tree, whose
                 // dynamic keys .convertFromSnakeCase would otherwise rewrite.
+                // request() checks only the envelope (an error line becomes
+                // RPCError); the typed model is decoded here so that when a
+                // future protocol breaks the typed shape, the failure still
+                // names the server's protocol via the lenient raw pass.
                 try await Herdr.request(
                     "session.snapshot",
                     socketPath: socketPath,
-                    as: SessionSnapshotResult.self
-                ) { result, responseLine in
-                    SnapshotFetch(
-                        session: result.snapshot,
-                        raw: try HerdrRawSnapshot.decode(responseLine: responseLine)
-                    )
+                    as: EmptyResult.self
+                ) { _, responseLine in
+                    let raw = try HerdrRawSnapshot.decode(responseLine: responseLine)
+                    do {
+                        let response = try makeDecoder().decode(
+                            RPCResponse<SessionSnapshotResult>.self,
+                            from: responseLine
+                        )
+                        guard let result = response.result else {
+                            throw HerdrClientError.emptyResult
+                        }
+                        return SnapshotFetch(session: result.snapshot, raw: raw)
+                    } catch let error as DecodingError {
+                        throw SnapshotSchemaError(
+                            serverProtocol: raw.serverProtocol,
+                            underlying: error
+                        )
+                    }
                 }
             },
             worktrees: { workspaceID in
@@ -166,10 +196,24 @@ final class Store {
     static let localPollInterval: Duration = .milliseconds(500)
 
     private(set) var state: StoreState
+    /// Protocol of the endpoint's last successfully decoded session.snapshot.
+    /// Kept across failures so a failed poll on a mismatched server can be
+    /// reported as protocolMismatch rather than disconnected.
+    private(set) var serverProtocol: Int?
     /// FleetStore applies remote setting changes without an SSH reconnect. Values
     /// of zero or less would busy-loop and are rejected; production only passes
     /// the RemotePollingInterval presets.
     private(set) var pollInterval: Duration
+
+    /// Non-nil while the endpoint is monitored optimistically: the display
+    /// snapshot is live, but the server speaks a protocol this app was not
+    /// written against, so any feature may misbehave. UI surfaces show a
+    /// warning next to the endpoint instead of refusing the data.
+    var protocolWarning: Int? {
+        guard case .ready = state, let serverProtocol,
+              serverProtocol != Herdr.supportedProtocol else { return nil }
+        return serverProtocol
+    }
 
     /// Returns an empty dictionary outside ready, so no path exists for the display
     /// layer to reuse a pre-disconnect snapshot.
@@ -429,12 +473,11 @@ final class Store {
             let fetch = try await dataSource.snapshot()
             let serverSnapshot = fetch.session
             guard !Task.isCancelled, !hasBeenStopped else { return }
-            guard serverSnapshot.protocolVersion == Herdr.supportedProtocol else {
-                log.error("protocol mismatch: server=\(serverSnapshot.protocolVersion)")
-                agentReadMonitor.sourceUnavailable()
-                state = .protocolMismatch(serverSnapshot.protocolVersion)
-                return
+            if serverSnapshot.protocolVersion != Herdr.supportedProtocol,
+               serverProtocol != serverSnapshot.protocolVersion {
+                log.warning("monitoring optimistically: server protocol \(serverSnapshot.protocolVersion) != supported \(Herdr.supportedProtocol)")
             }
+            serverProtocol = serverSnapshot.protocolVersion
             let branches = await fetchBranches(for: serverSnapshot)
             guard !Task.isCancelled, !hasBeenStopped else { return }
             agentReadMonitor.update(panes: serverSnapshot.agentsWithScroll())
@@ -449,9 +492,21 @@ final class Store {
         } catch {
             guard !Task.isCancelled, !hasBeenStopped else { return }
             agentReadMonitor.sourceUnavailable()
-            state = .disconnected
+            state = failureState(after: error)
             log.debug("snapshot failed: \(String(describing: error))")
         }
+    }
+
+    /// State published for a failed poll. On a server whose protocol differs
+    /// from supportedProtocol — remembered from earlier polls or named by a
+    /// schema error — the mismatch is reported as the cause; a same-protocol
+    /// failure is a plain disconnect.
+    private func failureState(after error: Error) -> StoreState {
+        let mismatched = (error as? SnapshotSchemaError)?.serverProtocol ?? serverProtocol
+        if let mismatched, mismatched != Herdr.supportedProtocol {
+            return .protocolMismatch(mismatched)
+        }
+        return .disconnected
     }
 
     /// Fetches worktree.list for each workspace that has watched panes and builds

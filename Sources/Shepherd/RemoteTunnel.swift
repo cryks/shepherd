@@ -434,9 +434,11 @@ enum SSHCommandBuilder {
     /// or from HOME/USER is executed as `"$candidate"`, so remote values are never
     /// reinterpreted as shell source. mise shims are excluded because a
     /// non-interactive shell may fail to resolve the tool version; the actual
-    /// install is searched instead. The CLI is selected by a protocol Shepherd can
-    /// read, not by an exact version match. Store judges the server protocol after
-    /// the tunnel is ready; this script performs no install or update.
+    /// install is searched instead. Candidates are tried twice: first only a CLI
+    /// on Shepherd's protocol, then any herdr that answers, so a protocol bump
+    /// degrades to optimistic monitoring instead of losing the endpoint. Store
+    /// judges the server protocol after the tunnel is ready; this script performs
+    /// no install or update.
     private static let remoteHerdrStatusScript = """
     set -u
     session=$1
@@ -450,12 +452,14 @@ enum SSHCommandBuilder {
         [ -n "$candidate" ] && [ -x "$candidate" ] || return 1
 
         client_status=$("$candidate" status client --json 2>/dev/null) || return 1
-        # A delimiter after the JSON number rejects longer incompatible versions
-        # that share its prefix.
-        case "$client_status" in
-            *"$protocol_field,"*|*"$protocol_field}"*) ;;
-            *) return 1 ;;
-        esac
+        if [ "$require_protocol" = 1 ]; then
+            # A delimiter after the JSON number rejects longer versions that
+            # share its prefix.
+            case "$client_status" in
+                *"$protocol_field,"*|*"$protocol_field}"*) ;;
+                *) return 1 ;;
+            esac
+        fi
 
         # The default namespace is not a named session, so do not pass --session to Herdr.
         if [ "$session" = default ]; then
@@ -465,43 +469,54 @@ enum SSHCommandBuilder {
         fi
     }
 
-    path_candidate=$(command -v herdr 2>/dev/null || :)
-    case "$path_candidate" in
-        /*/mise/shims/herdr) ;;
-        /*) run_status "$path_candidate" && exit 0 ;;
-    esac
+    try_candidates() {
+        path_candidate=$(command -v herdr 2>/dev/null || :)
+        case "$path_candidate" in
+            /*/mise/shims/herdr) ;;
+            /*) run_status "$path_candidate" && return 0 ;;
+        esac
 
-    if [ -n "$home" ]; then
-        run_status "$home/.local/bin/herdr" && exit 0
-    fi
+        if [ -n "$home" ]; then
+            run_status "$home/.local/bin/herdr" && return 0
+        fi
 
-    case "$(uname -s 2>/dev/null || :)" in
-        Darwin)
-            run_status /opt/homebrew/bin/herdr && exit 0
-            run_status /usr/local/bin/herdr && exit 0
-            ;;
-        Linux)
-            run_status /home/linuxbrew/.linuxbrew/bin/herdr && exit 0
-            ;;
-    esac
+        case "$(uname -s 2>/dev/null || :)" in
+            Darwin)
+                run_status /opt/homebrew/bin/herdr && return 0
+                run_status /usr/local/bin/herdr && return 0
+                ;;
+            Linux)
+                run_status /home/linuxbrew/.linuxbrew/bin/herdr && return 0
+                ;;
+        esac
 
-    if [ -n "$home" ]; then
-        for candidate in \\
-            "$home"/.local/share/mise/installs/herdr/*/bin/herdr \\
-            "$home"/.local/share/mise/installs/github-ogulcancelik-herdr/*/herdr
-        do
-            run_status "$candidate" && exit 0
-        done
-        run_status "$home/.nix-profile/bin/herdr" && exit 0
-    fi
+        if [ -n "$home" ]; then
+            for candidate in \\
+                "$home"/.local/share/mise/installs/herdr/*/bin/herdr \\
+                "$home"/.local/share/mise/installs/github-ogulcancelik-herdr/*/herdr
+            do
+                run_status "$candidate" && return 0
+            done
+            run_status "$home/.nix-profile/bin/herdr" && return 0
+        fi
 
-    if [ -n "$user" ]; then
-        run_status "/etc/profiles/per-user/$user/bin/herdr" && exit 0
-    fi
-    run_status /nix/var/nix/profiles/default/bin/herdr && exit 0
-    run_status /run/current-system/sw/bin/herdr && exit 0
+        if [ -n "$user" ]; then
+            run_status "/etc/profiles/per-user/$user/bin/herdr" && return 0
+        fi
+        run_status /nix/var/nix/profiles/default/bin/herdr && return 0
+        run_status /run/current-system/sw/bin/herdr && return 0
+        return 1
+    }
 
-    printf '%s\\n' 'no compatible herdr executable found in known remote locations' >&2
+    # Prefer a CLI on Shepherd's protocol; retry accepting any herdr that
+    # answers, so a protocol bump degrades to optimistic monitoring instead
+    # of losing the endpoint.
+    require_protocol=1
+    try_candidates && exit 0
+    require_protocol=0
+    try_candidates && exit 0
+
+    printf '%s\\n' 'no herdr executable found in known remote locations' >&2
     exit 127
     """
 

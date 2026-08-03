@@ -69,6 +69,14 @@ enum MonitoredSourceState: Equatable {
     }
 }
 
+/// One-line description of optimistic monitoring on an untested protocol.
+/// Shown as the warning badge's tooltip, as the stand-in warning line, and in
+/// the Settings status column.
+@MainActor
+func protocolWarningDescription(_ version: Int) -> String {
+    tr("herdr protocol \(version) is untested", ja: "herdr protocol \(version) は未検証")
+}
+
 /// One section as displayed. Local has `configuration == nil` and `source != nil`;
 /// a remote has `configuration != nil`, with `source == nil` only while monitoring
 /// is off. Letting the remote configuration outlive the runtime keeps the section
@@ -127,6 +135,13 @@ struct FleetSourceSection: Identifiable {
     var statusMessage: String? {
         guard isEnabled else { return nil }
         return source?.statusMessage ?? tr("Starting…", ja: "起動準備中…")
+    }
+
+    /// Non-nil while this endpoint is monitored on an untested protocol; the
+    /// header (or a stand-in line when the layout has no header) shows a
+    /// warning badge.
+    var protocolWarning: Int? {
+        source?.protocolWarning
     }
 
     var workspaceGroups: [(workspace: Workspace, panes: [Pane])] {
@@ -235,11 +250,25 @@ final class MonitoredSource: Identifiable {
         }
     }
 
+    /// Non-nil while this endpoint is monitored on a protocol this app was not
+    /// written against (and, for a remote, the tunnel is up). UI surfaces show
+    /// a warning badge next to the endpoint's name.
+    var protocolWarning: Int? {
+        guard state == .ready else { return nil }
+        return store.protocolWarning
+    }
+
     /// Maps a tunnel failure to a short per-cause message, annotated with whether it
     /// is retrying or stopped. The stderr body is split out into connectionDiagnostic
-    /// so SSH output does not flood the narrow source list.
+    /// so SSH output does not flood the narrow source list. A ready source on an
+    /// untested protocol reports that warning instead of a plain "Connected".
     var statusMessage: String {
-        guard let failure = tunnelFailure else { return state.message }
+        guard let failure = tunnelFailure else {
+            if let warning = protocolWarning {
+                return protocolWarningDescription(warning)
+            }
+            return state.message
+        }
         let summary = failure.kind.userFacingSummary
         if let tunnelState, case .retrying = tunnelState {
             return tr("\(summary) — reconnecting", ja: "\(summary) — 再接続中")

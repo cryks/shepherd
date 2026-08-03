@@ -129,6 +129,40 @@ struct SourceList: View {
     }
 }
 
+// MARK: - Protocol warning
+
+/// Warning triangle next to an endpoint name while it is monitored on an
+/// untested herdr protocol. The tooltip carries the version.
+private struct ProtocolWarningBadge: View {
+    let version: Int
+
+    var body: some View {
+        Image(systemName: "exclamationmark.triangle.fill")
+            .foregroundStyle(.orange)
+            .imageScale(.small)
+            .help(protocolWarningDescription(version))
+            .accessibilityLabel(protocolWarningDescription(version))
+    }
+}
+
+/// The same warning as its own line, for a section whose layout has no header
+/// to host the badge (local-only, or the hidden local title).
+private struct ProtocolWarningLine: View {
+    let version: Int
+
+    var body: some View {
+        Label {
+            Text(protocolWarningDescription(version))
+                .foregroundStyle(.secondary)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .imageScale(.small)
+        }
+        .font(.callout)
+    }
+}
+
 // MARK: - Menu panel section
 
 private struct MenuSourceSection: View {
@@ -151,6 +185,9 @@ private struct MenuSourceSection: View {
                     // becomes the section's last element, so give it the same 3pt
                     // bottom as a row to keep the 19pt total with the 16pt section spacing.
                     .padding(.bottom, section.state == .disabled ? 3 : 0)
+            } else if let warning = section.protocolWarning {
+                ProtocolWarningLine(version: warning)
+                    .padding(.horizontal, 17)
             }
 
             if section.state == .ready {
@@ -179,6 +216,10 @@ private struct MenuSourceSection: View {
             Text(title)
                 .font(.headline)
                 .lineLimit(1)
+
+            if let warning = section.protocolWarning {
+                ProtocolWarningBadge(version: warning)
+            }
 
             Spacer()
 
@@ -242,10 +283,19 @@ private struct WindowSourceSection: View {
                 // card's text to establish hierarchy against the card (content).
                 // The 4pt horizontal padding is a fine-tune for the visual
                 // alignment between the card's corner curve and the text's left edge.
-                Text(headerTitle)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(headerTitle)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+
+                    if let warning = section.protocolWarning {
+                        ProtocolWarningBadge(version: warning)
+                    }
+                }
+                .padding(.horizontal, 4)
+            } else if let warning = section.protocolWarning {
+                ProtocolWarningLine(version: warning)
                     .padding(.horizontal, 4)
             }
 

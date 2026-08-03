@@ -9,7 +9,9 @@
 
 ### Changed
 
-- Connecting requires herdr 0.8.0 (protocol 19).
+- Shepherd tracks herdr protocol 19; a server on another protocol is
+  monitored with a warning, and "not supported" appears only when reading
+  it fails.
 - The monospace row style matches the body text size.
 
 ### Fixed

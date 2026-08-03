@@ -185,6 +185,22 @@ final class SSHCommandBuilderTests: XCTestCase {
         XCTAssertTrue(log.contains("\(managedBinary.path) status server --json"))
     }
 
+    func testResolverFallsBackToAnyRespondingHerdrWhenNoProtocolMatch() async throws {
+        let fixture = try makeResolverFixture(homeName: "fallback-home")
+        defer { fixture.remove() }
+        let managedBinary = fixture.home.appendingPathComponent(".local/bin/herdr")
+        try writeFakeHerdr(
+            at: managedBinary,
+            protocolVersion: Herdr.supportedProtocol + 1
+        )
+
+        let result = try await runResolver(fixture: fixture, sessionName: "default")
+
+        XCTAssertEqual(result.status, 0)
+        let log = try String(contentsOf: fixture.log, encoding: .utf8)
+        XCTAssertTrue(log.contains("\(managedBinary.path) status server --json"))
+    }
+
     func testResolverTreatsMetacharactersInHOMEAsPathData() async throws {
         let fixture = try makeResolverFixture(
             homeName: "home 'quoted';$(touch${IFS}${MARKER})"
