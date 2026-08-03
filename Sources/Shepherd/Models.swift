@@ -1,4 +1,4 @@
-// Types only for the portion of the herdr socket API (protocol 17) JSON that
+// Types only for the portion of the herdr socket API (protocol 19) JSON that
 // this app reads. session.snapshot's agents elements are received as Pane and
 // its workspaces elements as Workspace; worktree.list's worktrees elements are
 // received as WorktreeEntry. Agent screen monitoring decodes agent.get into
@@ -30,11 +30,11 @@ struct Pane: Codable, Identifiable, Equatable {
     var paneId: String
     var workspaceId: String
     /// Stable identity across pane moves. AttentionMonitor uses it to correlate
-    /// observations and notification IDs; protocol 17 agent methods no longer
-    /// accept terminal IDs, so LocalAgentFocus targets the current paneId instead.
+    /// observations and notification IDs; protocol 19 agent methods reject
+    /// terminal IDs, so LocalAgentFocus targets the current paneId instead.
     var terminalId: String?
     /// Pane revision from session.snapshot. It is optional in Shepherd's model
-    /// so synthetic and older cached fixtures can omit it; protocol 17 supplies
+    /// so synthetic and older cached fixtures can omit it; protocol 19 supplies
     /// it for live agents. Herdr does not advance it for every terminal write,
     /// so AgentReadMonitor uses each successful snapshot as a read opportunity.
     var revision: UInt64? = nil
@@ -198,7 +198,7 @@ struct EmptyResult: Codable {}
 /// keep its terminal ID while the agent process starts a different native
 /// session.
 struct HerdrAgentSession: Codable, Equatable, Sendable {
-    /// Representation used for `value`. Protocol 17 supports either a native
+    /// Representation used for `value`. Protocol 19 supports either a native
     /// session ID or a session path.
     enum Kind: String, Codable, Sendable {
         case id
@@ -213,7 +213,7 @@ struct HerdrAgentSession: Codable, Equatable, Sendable {
     var value: String
 }
 
-/// The protocol 17 subset of `AgentInfo` needed to bracket an `agent.read`.
+/// The protocol 19 subset of `AgentInfo` needed to bracket an `agent.read`.
 /// Callers compare values returned before and after a screen read so a status
 /// transition or occupant replacement cannot be presented as one coherent
 /// observation.
@@ -309,8 +309,8 @@ struct PaneRead: Codable, Equatable, Sendable {
     var source: Source
     var format: Format
     var text: String
-    /// Protocol revision field returned with `text`. Herdr 0.7.5 hard-codes zero
-    /// for every source, and protocol 17 defines no correlation with AgentInfo.
+    /// Protocol revision field returned with `text`. Herdr 0.8.0 hard-codes zero
+    /// for every source, and protocol 19 defines no correlation with AgentInfo.
     var revision: UInt64
     /// True when Herdr omitted bytes because its response limit was reached.
     var truncated: Bool

@@ -1,7 +1,6 @@
 // Pins Shepherd's protocol boundary to the subset of Herdr JSON it consumes.
-// Protocol 17 adds agent lifecycle fields while preserving the snapshot,
-// workspace, and pane fields below; unknown fields remain outside Shepherd's
-// model instead of being copied into display state.
+// The fixtures below mirror protocol 19 responses; unknown fields remain
+// outside Shepherd's model instead of being copied into display state.
 //
 // One session.snapshot response line feeds both decode passes: the typed models
 // through makeDecoder(), whose .convertFromSnakeCase gives them camelCase
@@ -25,8 +24,8 @@ final class HerdrProtocolTests: XCTestCase {
           "result": {
             "type": "session_snapshot",
             "snapshot": {
-              "version": "0.7.5",
-              "protocol": 17,
+              "version": "0.8.0",
+              "protocol": 19,
               "focused_workspace_id": "w1",
               "focused_tab_id": "w1:t1",
               "focused_pane_id": "w1:p1",
@@ -92,7 +91,7 @@ final class HerdrProtocolTests: XCTestCase {
                   "terminal_id": "terminal-1",
                   "focused": true,
                   "revision": 7,
-                  "terminal_title_stripped": "Implement protocol 17",
+                  "terminal_title_stripped": "Implement protocol 19",
                   "launch_pending": false,
                   "interactive_ready": true,
                   "state_change_seq": 42,
@@ -112,14 +111,14 @@ final class HerdrProtocolTests: XCTestCase {
         """#.utf8
     )
 
-    func testDecodesProtocol17SessionSnapshotSubset() throws {
+    func testDecodesProtocol19SessionSnapshotSubset() throws {
         let response = try makeDecoder().decode(
             RPCResponse<SessionSnapshotResult>.self,
             from: Self.sessionSnapshotResponseLine
         )
         let result = try XCTUnwrap(response.result)
 
-        XCTAssertEqual(Herdr.supportedProtocol, 17)
+        XCTAssertEqual(Herdr.supportedProtocol, 19)
         XCTAssertEqual(result.snapshot.protocolVersion, Herdr.supportedProtocol)
         XCTAssertEqual(result.snapshot.workspaces.first?.workspaceId, "w1")
         XCTAssertEqual(result.snapshot.agents.first?.paneId, "w1:p1")
@@ -148,7 +147,7 @@ final class HerdrProtocolTests: XCTestCase {
         let agent = try XCTUnwrap(raw.agents["w1:p1"])
         XCTAssertEqual(
             agent["terminal_title_stripped"]?.templateText,
-            "Implement protocol 17"
+            "Implement protocol 19"
         )
         XCTAssertEqual(text(agent, "state_labels.blocked"), "Waiting for you")
         XCTAssertEqual(text(agent, "tokens.jj_status"), "conflict")
@@ -162,7 +161,7 @@ final class HerdrProtocolTests: XCTestCase {
         XCTAssertEqual(raw.tabs["w1:t1"]?["label"]?.templateText, "agent")
     }
 
-    func testDecodesProtocol17AgentInfoWithNativeSessionIdentity() throws {
+    func testDecodesProtocol19AgentInfoWithNativeSessionIdentity() throws {
         let json = Data(
             #"""
             {
@@ -234,7 +233,7 @@ final class HerdrProtocolTests: XCTestCase {
         XCTAssertNil(result.agent.agentSession)
     }
 
-    func testDecodesProtocol17PaneReadResult() throws {
+    func testDecodesProtocol19PaneReadResult() throws {
         let json = Data(
             #"""
             {

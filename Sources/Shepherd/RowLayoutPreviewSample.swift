@@ -81,8 +81,8 @@ enum RowLayoutPreviewSample {
           "result": {
             "type": "session.snapshot",
             "snapshot": {
-              "version": "0.7.5",
-              "protocol": 17,
+              "version": "0.8.0",
+              "protocol": 19,
               "agents": [
                 {
                   "pane_id": "w1:p1",

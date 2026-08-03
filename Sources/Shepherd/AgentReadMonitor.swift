@@ -16,8 +16,8 @@
 // A screen observation is bracketed by agent.get -> agent.read -> agent.get.
 // Publication requires the same pane, terminal, canonical agent, native
 // session, agent status, state-change sequence, and agent.get revision on both
-// sides. Protocol 17 does not relate pane_read.revision to agent.get.revision;
-// Herdr 0.7.5 returns zero for every pane_read source. The equal bracketing
+// sides. Protocol 19 does not relate pane_read.revision to agent.get.revision;
+// Herdr 0.8.0 returns zero for every pane_read source. The equal bracketing
 // agent.get revision therefore supplies the extractor's lifecycle revision.
 // The sandwich is not an atomic server transaction, but these checks reject
 // pane moves, occupant replacement, and status ABA transitions. Late

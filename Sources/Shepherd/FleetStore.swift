@@ -413,7 +413,7 @@ struct LocalAgentFocus {
     }
 
     /// Builds the live activation sequence around an agent request. request
-    /// receives the pane ID from the latest snapshot because protocol 17 agent
+    /// receives the pane ID from the latest snapshot because protocol 19 agent
     /// methods reject terminal IDs.
     init(
         request: @escaping @MainActor (_ target: String) async throws -> Void,

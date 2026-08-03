@@ -9,6 +9,7 @@
 
 ### Changed
 
+- Connecting requires herdr 0.8.0 (protocol 19).
 - The monospace row style matches the body text size.
 
 ### Fixed

@@ -74,7 +74,7 @@ enum AgentExcerptState: Equatable {
 /// `text` must be plain text with ANSI control sequences removed. `revision` is
 /// the coherent pane-lifecycle marker chosen by the caller, not a semantic
 /// message ID. AgentReadMonitor derives it from equal bracketing `agent.get`
-/// revisions because protocol 17 does not relate `pane_read.revision` to that
+/// revisions because protocol 19 does not relate `pane_read.revision` to that
 /// value.
 struct AgentExcerptInput: Equatable {
     var statusBeforeRead: AgentStatus

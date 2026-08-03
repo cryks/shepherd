@@ -116,7 +116,7 @@ final class AgentReadMonitorTests: XCTestCase {
         }
         XCTAssertTrue(
             published,
-            "Herdr 0.7.5 reports zero for pane_read.revision even when the " +
+            "Herdr 0.8.0 reports zero for pane_read.revision even when the " +
                 "bracketing agent_info revision is coherent"
         )
         XCTAssertEqual(monitor.excerpt(for: paneID)?.kind, .activity)

@@ -34,7 +34,7 @@ enum Herdr {
     /// The socket API version this app is written against. When
     /// session.snapshot's protocol differs from this, upper layers show the
     /// gray icon.
-    static let supportedProtocol = 17
+    static let supportedProtocol = 19
 
     /// One-shot RPC. Opens a connection per call, receives one response line,
     /// then closes. Throws RPCError when the server returns an error line.
