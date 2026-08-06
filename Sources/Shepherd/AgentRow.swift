@@ -241,12 +241,18 @@ struct AgentRow: View {
         left: [TemplateRun],
         right: [TemplateRun]
     ) -> some View {
-        // .top keeps the right side beside the first line when the left side
-        // wraps across line.maxLines rows.
-        HStack(alignment: .top, spacing: 6) {
+        // Aligning both sides at the center of their lowercase body keeps the
+        // smaller status caption optically level with the taller text beside
+        // it. Line-box .center sits the caption visibly high and
+        // .firstTextBaseline visibly low, because the two fonts distribute
+        // leading and descent differently. Anchoring on the first text
+        // baseline also keeps the right side beside the first line when the
+        // left side wraps across line.maxLines rows.
+        HStack(alignment: .xHeightCenter, spacing: 6) {
             runsView(left, style: line.leftStyle)
                 .lineLimit(line.maxLines)
                 .truncationMode(.tail)
+                .alignmentGuide(.xHeightCenter) { xHeightCenter($0, line.leftStyle) }
             // A line with an empty right template spends none of its width on
             // the gap, so the left side truncates at the same column it would
             // reach on a line that has no right template at all.
@@ -257,8 +263,18 @@ struct AgentRow: View {
                 runsView(right, style: line.rightStyle)
                     .lineLimit(1)
                     .layoutPriority(1)
+                    .alignmentGuide(.xHeightCenter) { xHeightCenter($0, line.rightStyle) }
             }
         }
+    }
+
+    /// Guide value for `.xHeightCenter`: the vertical center of the first
+    /// line's lowercase body, half an x-height above the baseline. The
+    /// x-height comes from the preset's AppKit font, the same source the
+    /// mark sizing uses.
+    private func xHeightCenter(_ d: ViewDimensions, _ style: RowTextStyle) -> CGFloat {
+        d[.firstTextBaseline]
+            - NSFont.preferredFont(forTextStyle: style.appKitTextStyle).xHeight / 2
     }
 
     /// Menu rows keep this line's metrics mounted for every excerpt state,
@@ -449,6 +465,20 @@ private struct RowTextStyleModifier: ViewModifier {
                 )
         }
     }
+}
+
+/// Alignment for the two sides of a row line. Each side sets its guide to the
+/// x-height center of its own font (see AgentRow.xHeightCenter); the default
+/// only covers views that never set the guide, such as the Spacer between the
+/// sides, which no other child aligns against.
+private extension VerticalAlignment {
+    struct XHeightCenterID: AlignmentID {
+        static func defaultValue(in context: ViewDimensions) -> CGFloat {
+            context[VerticalAlignment.center]
+        }
+    }
+
+    static let xHeightCenter = VerticalAlignment(XHeightCenterID.self)
 }
 
 private extension RowTextStyle {

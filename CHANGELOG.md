@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Status labels sit centered beside the heading instead of above it.
+
 ## v0.15.0 - 2026-08-04
 
 ### Added
