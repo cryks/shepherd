@@ -1,104 +1,53 @@
-// Selects a short, display-safe excerpt from rendered agent terminal screens.
-// This module owns the cache Shepherd shows in agent rows: the latest agent
-// message the extractor believes is on screen. A working read may replace the
-// cache from a single observation, so streaming prose appears while the agent
-// is still writing it; a settled (done/idle) read must produce the same
-// changed message twice in a row before it replaces the cache, so one
-// mid-redraw capture cannot stick until the next status change. Blocked
-// screens publish their exact prompt without touching the cache. A screen
-// with no recognizable message keeps the cached message; while working with
-// an empty cache, the agent's live activity line fills in.
-//
-// The cache is best-effort by design: it trusts that the newest non-tool
-// prose block on a coherent screen is the agent's latest message. Scrolled
-// history can therefore be cached briefly; the next read after the viewport
-// returns to the tail corrects it.
-//
-// The extractor does not read Herdr, persist terminal content, log text, or
-// truncate for a particular view width. Its caller supplies already-rendered
-// plain text and projects the machine's display state into an in-memory
-// cache; AgentExcerptUpdate describes the direct cache mutation for callers
-// that do not also track loading.
-
 import Foundation
 
-/// One line selected from an agent's rendered terminal.
-///
-/// `kind` describes why the line is useful, not a role asserted by Herdr.
-/// `confidence` reflects the extractor evidence. Shepherd displays only values
-/// returned here; low-confidence guesses remain internal and are never emitted.
 struct AgentExcerpt: Equatable {
     enum Kind: Equatable {
-        /// A tool, subagent, or other operation visible while the agent works.
-        /// Published only while no agent message has been cached yet.
         case activity
-        /// A question or permission form that requires a person's action.
         case attention
-        /// The agent message most recently seen on screen. While the agent
-        /// works this may be text still being streamed.
         case response
     }
 
     enum Confidence: Equatable {
-        /// Multiple signals agree, but the text still came from a terminal UI.
         case medium
-        /// The text came from an exact, agent-specific blocker structure.
         case high
     }
 
     var text: String
     var kind: Kind
     var confidence: Confidence
-    /// Pane revision associated with the accepted screen. Presentation does not
-    /// show this value; callers can use it for freshness diagnostics.
     var screenRevision: UInt64
 }
 
-/// UI-facing load state for one supported agent's display-safe Excerpt.
-///
-/// `loading` lasts until a coherent screen produces the first observation.
-/// `empty` means a coherent observation completed without a line Shepherd can
-/// publish.
-/// Unsupported agents do not receive this state; FleetStore represents them
-/// with nil so their rows keep the ordinary two-line layout.
+// Unsupported agents get nil instead of this state, so their rows keep the
+// ordinary two-line layout.
 enum AgentExcerptState: Equatable {
     case loading
     case available(AgentExcerpt)
     case empty
 }
 
-/// A coherent terminal observation supplied by the Herdr read monitor.
-///
-/// The caller must read the same tracked terminal's status immediately before
-/// and after `agent.read`; observations whose statuses differ are ignored.
-/// `text` must be plain text with ANSI control sequences removed. `revision` is
-/// the coherent pane-lifecycle marker chosen by the caller, not a semantic
-/// message ID. AgentReadMonitor derives it from equal bracketing `agent.get`
-/// revisions because protocol 19 does not relate `pane_read.revision` to that
-/// value.
 struct AgentExcerptInput: Equatable {
+    // The caller brackets `agent.read` with two `agent.get` status reads; a
+    // pair that differs means the screen was captured across a transition.
     var statusBeforeRead: AgentStatus
     var statusAfterRead: AgentStatus
+    // Pane-lifecycle marker the caller derives from equal bracketing
+    // `agent.get` revisions: protocol 19 does not relate `pane_read.revision`
+    // to that value.
     var revision: UInt64
+    // Plain text with ANSI control sequences already removed.
     var text: String
 }
 
-/// Mutation the owner applies to its displayed excerpt cache.
-///
-/// An explicit update distinguishes an inconclusive frame (`keep`) from a
-/// lifecycle boundary that invalidates the currently displayed value (`remove`).
 enum AgentExcerptUpdate: Equatable {
     case keep
     case replace(AgentExcerpt)
     case remove
 }
 
-/// Stateful, value-semantic dispatcher for the agent grammars Shepherd supports.
-///
-/// Create one machine per agent session. Replacing the session, changing the
-/// canonical agent, or removing the terminal must replace or discard the
-/// machine; otherwise another conversation could inherit this cache. The
-/// machine is synchronous and performs no I/O.
+// One machine per agent session. Replacing the session, changing the canonical
+// agent, or removing the terminal must replace or discard the machine, or
+// another conversation inherits this cache.
 struct AgentExcerptMachine {
     private enum Grammar {
         case codex
@@ -154,49 +103,32 @@ struct AgentExcerptMachine {
 
     private let grammar: Grammar
     private var lastRevision: UInt64?
-    /// Settled-screen replacement candidate. The same text must arrive in two
-    /// consecutive settled reads before it becomes the accepted message; any
-    /// other status observed in between cancels the candidate.
     private var pendingResponse: String?
     private var pendingResponseCount = 0
-    /// The cached latest agent message. Working reads replace it directly so
-    /// streaming text stays current; settled reads replace it only through the
-    /// two-read verification.
     private var acceptedResponse: AgentExcerpt?
     private(set) var excerpt: AgentExcerpt?
-    /// True after a settled read proposed a changed message. The caller should
-    /// issue another read promptly instead of waiting for the next poll tick.
+    // Set when a settled read proposed a changed message. The caller reads it
+    // to schedule the confirming read now instead of at the next poll tick.
     private(set) var requiresVerificationRead = false
 
-    /// Returns nil for an agent whose rendered screen grammar Shepherd does not
-    /// support. Agent aliases are normalized here so callers do not branch.
     init?(agentID: String) {
         guard let grammar = Grammar(agentID: agentID) else { return nil }
         self.grammar = grammar
     }
 
-    /// Whether Shepherd has a terminal grammar for this agent identifier.
-    ///
-    /// Read monitors use this before issuing an RPC, so an unsupported agent
-    /// never contributes screen text to the Excerpt cache.
+    // Read monitors call this before issuing an RPC, so an unsupported agent
+    // never contributes screen text.
     static func supports(agentID: String) -> Bool {
         Grammar(agentID: agentID) != nil
     }
 
-    /// Ingests one screen and returns the display-cache mutation it causes.
-    ///
-    /// Working replaces the cached message with the newest visible one, or
-    /// publishes current activity while the cache is empty. Blocked publishes
-    /// only an exact prompt and leaves the cache untouched. Done/idle requires
-    /// two matching observations before a changed message replaces the cache.
-    /// A revision regression clears the cache because it indicates a restarted
-    /// terminal lifecycle. A suppressed CLI overlay contributes nothing and
-    /// keeps the cache on display.
     mutating func ingest(_ input: AgentExcerptInput) -> AgentExcerptUpdate {
         guard input.statusBeforeRead == input.statusAfterRead else {
             cancelPendingVerification()
             return .keep
         }
+        // Revisions only grow within one terminal lifecycle, so a regression
+        // means the pane restarted and the cache belongs to a dead session.
         if let lastRevision, input.revision < lastRevision {
             resetLifecycle()
         }
@@ -211,6 +143,8 @@ struct AgentExcerptMachine {
         switch input.statusAfterRead {
         case .working:
             cancelPendingVerification()
+            // A single observation is enough here so streamed prose reaches
+            // the row while the agent is still writing it.
             if let text = grammar.latestResponse(in: screen) {
                 acceptedResponse = AgentExcerpt(
                     text: text,
@@ -272,10 +206,9 @@ struct AgentExcerptMachine {
         requiresVerificationRead = false
     }
 
-    /// Requires two consecutive settled observations of the same changed text
-    /// before it replaces the cache. The monitor observes
-    /// requiresVerificationRead and schedules the second read without waiting
-    /// for the next snapshot poll.
+    // A settled status stops further reads until the next status change, so a
+    // screen captured mid-redraw would stay on display indefinitely. Two
+    // consecutive settled reads of the same text rule that out.
     private mutating func verify(_ candidate: String) -> Bool {
         if pendingResponse == candidate {
             pendingResponseCount += 1
@@ -296,8 +229,8 @@ struct AgentExcerptMachine {
         lastRevision = nil
         acceptedResponse = nil
         cancelPendingVerification()
-        // Keep the published value until publish(_:) computes the explicit
-        // remove/replace mutation the caller must apply after the reset.
+        // `excerpt` stays until publish(_:) runs, which is what turns the reset
+        // into the explicit remove/replace the caller has to apply.
     }
 
     private mutating func publish(_ next: AgentExcerpt?) -> AgentExcerptUpdate {
@@ -327,11 +260,9 @@ struct AgentExcerptMachine {
     }
 }
 
-/// Normalized terminal rows shared by the agent-specific grammars.
-///
-/// Herdr can return non-breaking spaces and terminal-width padding. Replacing
-/// only those representation details preserves indentation used to recognize
-/// wrapped response lines and tool trees.
+// Herdr returns non-breaking spaces and pads rows to the terminal width. Only
+// those are normalized: the grammars recognize wrapped prose and tool trees by
+// leading indentation, which must survive.
 struct ExcerptScreen {
     var lines: [String]
 
@@ -369,17 +300,13 @@ enum ExcerptText {
         return value.allSatisfy { ruleCharacters.contains($0) }
     }
 
-    /// Selects the question/title immediately preceding a numbered choice form.
-    /// Agent-specific callers invoke this only while Herdr reports blocked, so
-    /// identical words inside a completed response cannot become attention text.
-    ///
-    /// A form's question sits above its first choice, but the choice list can
-    /// be split by horizontal rules: Claude renders the escape-hatch "Chat
-    /// about this" row (sometimes numbered as a choice) below its own rule.
-    /// The search therefore starts at the bottom choice and, when the region
-    /// above it holds no question text, crosses one rule at a time to the
-    /// choices above. A hint line ends the walk because it closes a previous,
-    /// already-answered form.
+    // Callers reach this only while Herdr reports blocked, so the same words
+    // inside a finished response cannot be mistaken for a live form.
+    //
+    // The question sits above the form's first choice, but rules can split the
+    // choice list: Claude puts its escape-hatch "Chat about this" row, itself
+    // sometimes numbered, below a rule of its own. The walk therefore starts at
+    // the bottom choice and crosses one rule at a time upwards.
     static func attentionPrompt(in screen: ExcerptScreen) -> String? {
         let lines = screen.lines
         let isChoice: (String) -> Bool = { line in
@@ -423,8 +350,8 @@ enum ExcerptText {
 
         var anchor = lines[...lastAnchor].lastIndex(where: isChoice)
         while let choiceAnchor = anchor {
-            // A previous form's final hint bounds the region the same way a
-            // rule does, for CLIs that render two forms without a rule
+            // A hint line closes an already-answered form, so it bounds the
+            // region like a rule does. Some CLIs stack two forms with no rule
             // between them.
             let boundaryIndex = lines[..<choiceAnchor].lastIndex(where: {
                 isHorizontalRule($0) || isHint($0)
@@ -448,16 +375,12 @@ enum ExcerptText {
         return nil
     }
 
-    /// Extracts the question from the lines between a form boundary and its
-    /// first choice. Selection is positional, not lexical: a question prompt
-    /// is free-form text with no required punctuation, so no candidate is
-    /// preferred for containing "?". A paragraph introduced by a
-    /// "Question N/M" header wins — the region can reach back to the top of
-    /// the screen when the form has no leading rule, and the header pins the
-    /// question below any earlier prose. Otherwise the question (or the
-    /// form's title) is the last paragraph before the choices; every
-    /// supported form renders it in that position, while command lines,
-    /// metadata blocks, and the tab strip never become candidates.
+    // Selection is positional, not lexical: prompts are free-form text with no
+    // required punctuation, so a "?" does not favor a candidate. Every supported
+    // form renders the question last before the choices. A "Question N/M"
+    // header wins over that rule because a form without a leading rule leaves
+    // the region reaching to the top of the screen, and the header pins the
+    // question below any earlier prose.
     private static func question(in lines: ArraySlice<String>) -> String? {
         var candidates: [String] = []
         var headerCandidates: [String] = []
@@ -512,10 +435,9 @@ enum ExcerptText {
         return candidates.last
     }
 
-    /// Claude's question forms draw a tab strip above the question text: one
-    /// "☐"/"☑" title per question plus a "✔ Submit" tab, wrapped in "←"/"→"
-    /// scroll arrows when the strip overflows the pane width. The strip is
-    /// navigation chrome and must not become the extracted question.
+    // Claude's question forms draw navigation chrome above the question: one
+    // "☐"/"☑" tab per question plus a "✔ Submit" tab, wrapped in "←"/"→" scroll
+    // arrows when the strip is wider than the pane.
     private static func isQuestionTabStrip(_ value: String) -> Bool {
         let stripped = value.drop { $0 == "←" || $0 == " " }
         return ["☐", "☑", "✔"].contains { stripped.hasPrefix($0) }

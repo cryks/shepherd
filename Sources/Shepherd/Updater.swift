@@ -1,32 +1,23 @@
-// Sparkle integration. Owns the app's SPUStandardUpdaterController for the
-// process lifetime and re-publishes the two pieces of updater state the UI
-// reads: canCheckForUpdates for MenuPanel's "Check for Updates…" item and the
-// automatic-check flag for the settings Toggle. The feed URL and EdDSA public
-// key live in
-// Support/Info.plist (SUFeedURL / SUPublicEDKey); the appcast itself is
-// generated and signed by .github/workflows/release.yml. Persistence of the
-// automatic-check preference belongs to Sparkle (SUEnableAutomaticChecks in
-// UserDefaults), not to this file.
+// The feed URL and the EdDSA public key live in Support/Info.plist (SUFeedURL
+// / SUPublicEDKey), and .github/workflows/release.yml generates and signs the
+// appcast. Sparkle stores the automatic-check preference itself
+// (SUEnableAutomaticChecks in UserDefaults); this file keeps no copy.
 
 import Combine
 import Observation
 import Sparkle
 
-/// Bridge between SPUUpdater and SwiftUI. SPUUpdater publishes state through
-/// KVO, which @Observable views cannot subscribe to, so this model mirrors
-/// what the UI needs and forwards writes back to the updater.
+// SPUUpdater publishes its state through KVO, which @Observable views cannot
+// subscribe to, so this model mirrors it and forwards writes back.
 @Observable @MainActor
 final class UpdaterModel {
-    /// False while an update session is running. MenuPanel's "Check for
-    /// Updates…" item is disabled in that state; SPUUpdater ignores
-    /// checkForUpdates calls then, so the disabled state only makes the no-op
-    /// visible.
+    // Sparkle ignores checkForUpdates while an update session runs, so
+    // disabling the menu item only makes that no-op visible.
     private(set) var canCheckForUpdates = false
 
-    /// Mirror of SPUUpdater.automaticallyChecksForUpdates for the settings
-    /// Toggle. Sparkle's own permission prompt (shown once, on the second
-    /// launch) writes the underlying value without going through this model,
-    /// so refresh() re-reads it whenever the settings pane appears.
+    // Sparkle's own permission prompt (shown once, on the second launch)
+    // writes the stored value without passing through this model, so refresh()
+    // re-reads it whenever the settings pane appears.
     var automaticallyChecksForUpdates: Bool {
         didSet {
             if controller.updater.automaticallyChecksForUpdates
@@ -43,9 +34,9 @@ final class UpdaterModel {
 
     init() {
         // startingUpdater: true schedules Sparkle's automatic check cycle at
-        // launch. Info.plist sets no SUEnableAutomaticChecks, so consent for
-        // background checks is collected by Sparkle's standard prompt and the
-        // settings Toggle edits that same stored answer.
+        // launch. Info.plist sets no SUEnableAutomaticChecks, so Sparkle's
+        // standard prompt collects consent and the settings Toggle edits that
+        // same stored answer.
         let controller = SPUStandardUpdaterController(
             startingUpdater: true,
             updaterDelegate: nil,
@@ -57,21 +48,19 @@ final class UpdaterModel {
         canCheckSubscription = controller.updater
             .publisher(for: \.canCheckForUpdates)
             .sink { [weak self] canCheck in
-                // SPUUpdater is main-thread bound, so its KVO notifications
-                // arrive on the main thread and assumeIsolated holds.
+                // SPUUpdater is bound to the main thread, so its KVO
+                // notifications arrive there.
                 MainActor.assumeIsolated {
                     self?.canCheckForUpdates = canCheck
                 }
             }
     }
 
-    /// User-initiated check through Sparkle's standard UI.
     func checkForUpdates() {
         controller.checkForUpdates(nil)
     }
 
-    /// Re-reads automaticallyChecksForUpdates from the updater; the didSet
-    /// guard keeps an unchanged value from echoing back into Sparkle.
+    // The didSet guard keeps an unchanged value from echoing back into Sparkle.
     func refresh() {
         automaticallyChecksForUpdates =
             controller.updater.automaticallyChecksForUpdates

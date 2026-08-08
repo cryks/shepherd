@@ -1,21 +1,6 @@
-// Renders the five menu-bar status icons as PNGs for the README legend.
-// Usage: swift Support/GenerateStatusIcons.swift <output directory>
-//
-// The drawing duplicates StatusIcons.circleImage in Sources/Shepherd/ShepherdApp.swift
-// (18pt canvas, 14pt outer diameter, 1.5 line width, dash pattern [2.5, 2.0]). To keep
-// the legend looking identical to the real thing, update this file whenever the app's
-// dimensions change and run make icon.
-//
-// Color handling differs from the app in exactly two ways:
-//   - Dynamic colors such as systemRed are resolved with the appearance pinned to aqua.
-//     A CLI run has no window appearance context, so this keeps colors from shifting
-//     with the settings of whatever environment runs the script.
-//   - The two achromatic states (idle / disconnected) are template images in the app and
-//     follow the menu bar's light/dark rendering, but a PNG is a single image, so they
-//     are fixed to a mid gray (white: 0.5) that stays readable on both GitHub themes.
-//
-// Output is 4x the 18pt size (72px). The README uses width="18" so the edges
-// stay crisp on Retina displays.
+// The geometry here duplicates StatusIcons.circleImage in
+// Sources/Shepherd/ShepherdApp.swift. Change both together, or the README legend
+// stops matching the menu bar.
 import AppKit
 
 struct StatusIcon {
@@ -25,6 +10,8 @@ struct StatusIcon {
     var dashed = false
 }
 
+// The app draws the achromatic states as template images that follow the menu bar.
+// A PNG cannot, so pick a gray that reads on both GitHub themes.
 let legendGray = NSColor(white: 0.5, alpha: 1)
 let icons: [StatusIcon] = [
     StatusIcon(filename: "blocked.png", color: .systemRed, filled: true),
@@ -35,6 +22,7 @@ let icons: [StatusIcon] = [
 ]
 
 let pointSize: CGFloat = 18
+// The README displays these at width="18", so 4x keeps them crisp on Retina.
 let scale: CGFloat = 4
 
 func draw(_ icon: StatusIcon, in rect: NSRect) {
@@ -67,6 +55,8 @@ func render(_ icon: StatusIcon, to url: URL) {
     }
     NSGraphicsContext.current = ctx
     ctx.cgContext.scaleBy(x: scale, y: scale)
+    // A CLI process has no appearance context, so dynamic colors such as systemRed
+    // would otherwise resolve against whatever the host environment is set to.
     NSAppearance(named: .aqua)!.performAsCurrentDrawingAppearance {
         draw(icon, in: NSRect(x: 0, y: 0, width: pointSize, height: pointSize))
     }

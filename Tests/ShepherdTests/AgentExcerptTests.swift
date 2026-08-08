@@ -1,10 +1,5 @@
-// Pins the screen-derived Excerpt contract with synthetic Codex and Claude
-// terminal fixtures. The fixtures reproduce only stable UI structure—message
-// markers, tool trees, prompt boxes, and footer chrome—and contain no captured
-// session content. Tests exercise the state machine boundary instead of parser
-// helpers so status evidence remains part of every published excerpt: the
-// newest visible message is cached from a single working read, while settled
-// screens must repeat a changed message before it replaces the cache.
+// The fixtures reproduce the on-screen chrome of the real Codex and Claude
+// TUIs, so they track those tools and carry no captured session content.
 
 import XCTest
 @testable import Shepherd
@@ -55,8 +50,8 @@ final class CodexAgentExcerptTests: XCTestCase {
             Fixtures.codexWorkingWithPriorResponse
         ))
 
-        // The message scrolled out of view; the live status alone must not
-        // demote the cached message back to a spinner line.
+        // The cached message scrolled out of view, and a live status line is
+        // weaker evidence than the message it would replace.
         XCTAssertEqual(
             machine.ingest(input(.working, 24, Fixtures.codexWorking)),
             .keep
@@ -245,7 +240,6 @@ final class CodexAgentExcerptTests: XCTestCase {
         ))
         let accepted = try XCTUnwrap(machine.excerpt)
 
-        // The message is still visible above the tool history: no change.
         XCTAssertEqual(
             machine.ingest(input(
                 .done,
@@ -256,7 +250,6 @@ final class CodexAgentExcerptTests: XCTestCase {
         )
         XCTAssertFalse(machine.requiresVerificationRead)
 
-        // The message scrolled out of view entirely: the cache remains.
         XCTAssertEqual(
             machine.ingest(input(.idle, 52, Fixtures.codexToolOnly)),
             .keep
@@ -594,8 +587,6 @@ final class CodexAgentExcerptTests: XCTestCase {
         XCTAssertEqual(machine.ingest(racedTransition), .keep)
         XCTAssertFalse(machine.requiresVerificationRead)
 
-        // Verification restarts from scratch: the next two settled reads are
-        // needed again before the candidate becomes the cached message.
         XCTAssertEqual(
             machine.ingest(input(.done, 88, Fixtures.codexCompleted)),
             .keep
@@ -638,8 +629,7 @@ final class ClaudeAgentExcerptTests: XCTestCase {
             ))
         )
 
-        // The settled screen shows exactly the cached message, so the display
-        // does not flicker and no verification read is requested.
+        // An unchanged candidate needs no second read to confirm it.
         XCTAssertEqual(
             machine.ingest(input(
                 .done,
@@ -915,8 +905,8 @@ final class ClaudeAgentExcerptTests: XCTestCase {
         var machine = try makeMachine("claude")
         _ = machine.ingest(input(.working, 90, Fixtures.claudeWorking))
 
-        // The candidate changed, so the cached message stays on display while
-        // the settled screen is verified.
+        // A changed candidate keeps the cached text on display until a second
+        // read confirms it, so a half-drawn reply never reaches the row.
         XCTAssertEqual(
             machine.ingest(input(.done, 91, Fixtures.claudeCompleted)),
             .keep
@@ -1127,8 +1117,8 @@ final class ClaudeAgentExcerptTests: XCTestCase {
             "Preview now keeps the latest completed reply while tools are running."
         )
 
-        // A settled scrolled-back screen must not enter the two-read
-        // verification with the historical prose it shows.
+        // The prose on a scrolled-back screen is history, so it must not enter
+        // verification even when the screen is settled.
         var settledMachine = try makeMachine("claude")
         XCTAssertEqual(
             settledMachine.ingest(input(
@@ -1174,10 +1164,8 @@ final class ClaudeAgentExcerptTests: XCTestCase {
     }
 
     func testSettledScreenPublishesNewestVisibleMessageWithoutAnchor() throws {
-        // Best-effort contract: a settled screen's newest visible message is
-        // cached even when the preceding working screens never showed it.
-        // Scrolled-in history can therefore be published; the next read after
-        // the viewport returns to the tail corrects it.
+        // Publishing scrolled-in history is accepted here: no anchor tells it
+        // apart from a new reply, and the next tail read corrects it.
         var machine = try makeMachine("claude")
         _ = machine.ingest(input(
             .working,
@@ -1508,18 +1496,17 @@ private enum Fixtures {
         """
     }
 
-    // A conversational turn: no tool work, so no separator — the message
-    // sits below the user prompt echo.
+    // Codex draws no turn separator when the turn ran no tools, so the
+    // message follows the prompt echo directly.
     static let codexStatusLikeResponse = """
     › Add preview support
 
     • Explain this hint (press Esc to interrupt)
     """
 
-    // Models the current Codex TUI after a long turn: the response's leading
-    // "•" scrolled above the viewport, a "─ Worked for …" divider closes the
-    // turn, and the status bar's two-space-indented line sits below the "»"
-    // composer.
+    // Codex after a long turn: the message's leading "•" scrolled off, a
+    // "─ Worked for …" divider closes the turn, and the indented status bar
+    // sits below the "»" composer.
     static let codexScrolledLongResponse = """
       - The menu row keeps a fixed third line.
       - Loading swaps to the excerpt text.
@@ -1533,8 +1520,8 @@ private enum Fixtures {
       ~/work/shepherd · main · Context 16% used · Main [default]
     """
 
-    // Models the current Codex question form: a "Question N/M" header above
-    // the question, and a question that ends with a full-width "？".
+    // Codex heads its question form with "Question N/M", and a Japanese
+    // question ends with a full-width "？".
     static let codexQuestionFullWidth = """
     • 質問フォームを表示するよ。
 
@@ -1548,9 +1535,8 @@ private enum Fixtures {
       tab to add notes | enter to submit answer | esc to interrupt
     """
 
-    // A statement question below prose that happens to contain "?": the
-    // "Question N/M" header and the form position select the question, not
-    // the question mark.
+    // The prose above the form also contains "?", so only the "Question N/M"
+    // header and the position above the choices identify the real question.
     static let codexStatementQuestion = """
     • まずは前の結果を見てほしいな? と思ったけど先に聞くね。
 
@@ -1563,8 +1549,8 @@ private enum Fixtures {
       tab to add notes | enter to submit answer | esc to interrupt
     """
 
-    // A message below the turn separator, with a history cell whose title
-    // the extractor does not recognize after it.
+    // "Recorded session trace" is a history cell with an unrecognized title,
+    // and it sits after the message the separator introduces.
     static let codexSeparatorLedResponse = """
     • Ran git status
       └ (no output)
@@ -1581,8 +1567,7 @@ private enum Fixtures {
       tab to queue message                         97% context left
     """
 
-    // The labelled separator Codex draws once a turn ran longer than a
-    // minute.
+    // Codex labels the separator once a turn ran longer than a minute.
     static let codexLabeledSeparatorResponse = """
     • Ran make build
       └ Build complete
@@ -1596,8 +1581,8 @@ private enum Fixtures {
       tab to queue message                         96% context left
     """
 
-    // The separator is drawn but the message has not streamed yet: the live
-    // status is the first line below it.
+    // Codex draws the separator before the reply streams, so the live status
+    // is what follows it here.
     static let codexSeparatorBeforeAnswerStream = """
     ────────────────────────────────────────
 
@@ -1615,8 +1600,8 @@ private enum Fixtures {
       tab to queue message                         95% context left
     """
 
-    // Every anchor scrolled above the viewport; the unrecognized history
-    // cell must not be mistaken for the message.
+    // Every anchor scrolled above the viewport, leaving only an unrecognized
+    // history cell that must not pass for the message.
     static let codexAnchorlessTrailingCell = """
     • Recorded session trace
 
@@ -1717,9 +1702,8 @@ private enum Fixtures {
     Esc to cancel
     """
 
-    // Models the current Claude question form: a "☐" tab title above the
-    // question, and a numbered escape-hatch "Chat about this" row below its
-    // own horizontal rule.
+    // Claude heads its question form with a "☐" tab title and puts a numbered
+    // "Chat about this" row below a rule of its own.
     static let claudeQuestionWithEscapeHatchRow = """
     ⏺ Asking before continuing.
 
@@ -1739,8 +1723,8 @@ private enum Fixtures {
     Enter to select · ↑/↓ to navigate · Esc to cancel
     """
 
-    // Models a question whose prompt is a statement without any question
-    // mark: only its position directly above the choices identifies it.
+    // The prompt is a statement with no question mark, so only its position
+    // directly above the choices identifies it.
     static let claudeStatementQuestion = """
     ⏺ 気分を教えてもらうね
 
@@ -1759,10 +1743,9 @@ private enum Fixtures {
     Enter to select · ↑/↓ to navigate · Esc to cancel
     """
 
-    // Models a multi-select AskUserQuestion form: the tab strip is wrapped in
-    // "←"/"→" scroll arrows and carries a "✔ Submit" tab, the question ends
-    // with a parenthetical after its full-width "？", and every choice has a
-    // "[ ]" checkbox between its number and label.
+    // A multi-select AskUserQuestion form differs on every landmark: scroll
+    // arrows and a "✔ Submit" tab in the strip, text after the question's
+    // "？", and a "[ ]" checkbox between each number and label.
     static let claudeMultiSelectQuestion = """
     ⏺ じゃあ今度はちょっと違うパターンで試してみるね uwu
 
@@ -1783,8 +1766,8 @@ private enum Fixtures {
     Enter to select · ↑/↓ to navigate · Esc to cancel
     """
 
-    // The same form with a preview pane drawn to the right of the choices and
-    // an un-numbered escape-hatch row.
+    // A preview pane shares the choice rows' lines, and the escape-hatch row
+    // carries no number.
     static let claudeQuestionWithPreviewPane = """
     ⏺ Preparing the form comparison.
 
@@ -1987,9 +1970,8 @@ private enum Fixtures {
       ? for shortcuts
     """
 
-    // Footer lines below reproduce the observed Claude Code status line: an
-    // animated spinner glyph, a gerund summary, and parenthesized metadata
-    // whose thinking segment appears and disappears while the model thinks.
+    // Claude Code animates the spinner glyph and adds or drops the thinking
+    // segment of the metadata as the model runs, so callers vary the footer.
     static func claudeSpinnerFooter(_ footerLine: String) -> String {
         """
         ⏺ Read(Sources/App/Preview.swift)
@@ -2015,9 +1997,8 @@ private enum Fixtures {
       ? for shortcuts
     """
 
-    // A long streaming or settled message whose "⏺" head scrolled above the
-    // viewport: only two-space-indented continuation lines remain before the
-    // composer box.
+    // The message's "⏺" head scrolled above the viewport, so only indented
+    // continuation lines remain above the composer box.
     static let claudeScrolledLongResponse = """
       the message head scrolled above the viewport, so only its
       continuation lines remain visible.
@@ -2030,10 +2011,9 @@ private enum Fixtures {
       ? for shortcuts
     """
 
-    // A scrolled-back viewport: Claude draws the new-message indicator
-    // centered over the bottom transcript row, replacing the characters
-    // it covers, so the row's own text resumes after the overlay. Every
-    // row above it is history.
+    // Claude overwrites the middle of the bottom transcript row with the
+    // new-message indicator, so that row reads as broken text and everything
+    // above it is history.
     static let claudeScrolledBackNewMessage = """
     ❯ Add preview support
 
@@ -2049,8 +2029,8 @@ private enum Fixtures {
       ? for shortcuts
     """
 
-    // The no-new-rows form of the overlay, landing past the end of a
-    // short duration-footer row so nothing resumes after it.
+    // The overlay lands past the end of a short footer row, so no text
+    // resumes after it and only the wording marks the scrolled-back state.
     static let claudeScrolledBackJumpToBottom = """
     ❯ Add preview support
 
@@ -2064,8 +2044,8 @@ private enum Fixtures {
       ? for shortcuts
     """
 
-    // Indicator vocabulary inside a message: the quoted overlay text is
-    // not on the row directly above the composer's top rule.
+    // The overlay wording appears inside a message, away from the row above
+    // the composer's top rule where the real overlay lands.
     static let claudeScrollbackWordsResponse = """
     ⏺ The overlay draws “Jump to bottom (click) ↓” over the middle
       of the bottom transcript row.

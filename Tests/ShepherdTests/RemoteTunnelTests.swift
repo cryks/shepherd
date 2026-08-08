@@ -1,8 +1,3 @@
-// Verifies RemoteTunnelManager's state transitions and process ownership without launching SSH or a real Herdr.
-// The status response, long-lived child, socket path cache, socket file, ping, and sleep are each controlled
-// individually, covering cache reuse across restarts, discarding before ready, retention after ready, and
-// terminate on stop.
-
 import Darwin
 import Foundation
 import XCTest
@@ -453,12 +448,12 @@ private enum TunnelTestError: Error {
     case write(Int32)
 }
 
-/// One-shot server that receives the live probe's wire contract on a temporary Unix socket outside the repository.
 private final class TestHerdrPingServer: @unchecked Sendable {
     let socketPath: String
     private let serverFileDescriptor: Int32
 
     init() throws {
+        // Short, and under /tmp: sockaddr_un.sun_path holds only 104 bytes.
         socketPath = "/tmp/shepherd-probe-\(UUID().uuidString.prefix(12)).sock"
         _ = unlink(socketPath)
 
@@ -562,7 +557,6 @@ private final class TestHerdrPingServer: @unchecked Sendable {
     }
 }
 
-/// Runner that hands out discovery responses and tunnel children in FIFO order and records launch counts.
 private final class ScriptedCommandRunner: RemoteTunnelCommandRunning, @unchecked Sendable {
     private let lock = NSLock()
     private var discoveryResults: [RemoteProcessResult]
@@ -625,7 +619,6 @@ private final class ScriptedCommandRunner: RemoteTunnelCommandRunning, @unchecke
     }
 }
 
-/// In-memory cache that returns the same path across manager recreation and also observes clearing via store(nil).
 private final class TestRemoteSocketPathCache: @unchecked Sendable {
     private let lock = NSLock()
     private var storedValue: String?
@@ -650,7 +643,6 @@ private final class TestRemoteSocketPathCache: @unchecked Sendable {
     }
 }
 
-/// Long-lived child that keeps wait pending until terminate or a test-driven exit.
 private final class TestRunningProcess: RemoteTunnelRunningProcess, @unchecked Sendable {
     private let lock = NSLock()
     private var result: RemoteProcessResult?
@@ -717,7 +709,6 @@ private final class TestRunningProcess: RemoteTunnelRunningProcess, @unchecked S
     }
 }
 
-/// Filesystem that reproduces the state where the SSH listener has appeared at prepare time.
 private final class TestTunnelFileSystem: @unchecked Sendable {
     private let lock = NSLock()
     private var available = false
@@ -749,7 +740,6 @@ private final class TestTunnelFileSystem: @unchecked Sendable {
     }
 }
 
-/// Blocks the ping until the test opens the gate, creating the boundary where listener creation alone does not make the tunnel ready.
 private actor ProbeGate {
     private var isOpen = false
     private var waiter: CheckedContinuation<Void, Never>?
@@ -768,7 +758,6 @@ private actor ProbeGate {
     }
 }
 
-/// Records that Task cancellation during discovery propagates all the way to the command runner.
 private final class CancellableDiscoveryRunner: RemoteTunnelCommandRunning, @unchecked Sendable {
     private let lock = NSLock()
     private var calls = 0

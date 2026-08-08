@@ -1,7 +1,3 @@
-// Verifies source qualification of endpoint IDs, normalization/validation of remote SSH
-// settings, and the JSON persistence contract in UserDefaults. No SSH process or runtime
-// socket is created; only settings that persist across restarts are covered.
-
 import Foundation
 import XCTest
 @testable import Shepherd

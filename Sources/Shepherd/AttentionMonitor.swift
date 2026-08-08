@@ -1,32 +1,11 @@
-// Derives per-agent attention transitions from FleetStore snapshots without
-// delivering macOS notifications itself. The pure AttentionStateMachine owns the
-// last successful snapshot of each monitored source generation. Temporary source
-// unavailability keeps that state, while an intentionally removed or replaced
-// runtime clears it. AttentionMonitor is the app-owned Observation adapter: it
-// captures the complete fleet after a tracked change and forwards value effects to
-// an injected sink.
-//
-// A notification represents live attention rather than history. Only blocked and
-// done transitions deliver. Returning to working, idle, or unknown, disappearing
-// from a successful snapshot, disabling notifications, removing a source, and app
-// termination remove the corresponding live notification. The first ready snapshot
-// after launch, source creation, runtime replacement, or notification re-enable is
-// a baseline and never delivers.
-//
-// Notification text is rendered where the fleet is captured: an observation
-// carries the three finished strings, and the reducer only copies them into the
-// notice it emits. Templates live in RowLayoutSetting and resolve through
-// FleetStore.rowContext, both of which are MainActor Observation state that the
-// reducer must stay free of. Identity — request IDs, thread identifiers, dedup,
-// removal — is derived from source, generation, and agent locator alone, so an
-// edited template never re-alerts an attention state the user already saw.
+// A notification here stands for live attention, not history: every path that
+// ends an attention state also removes its notification.
 
 import Foundation
 import Observation
 
-/// Identifies one in-memory MonitoredSource runtime. HerdrSourceID survives edits
-/// and monitoring toggle cycles, so it cannot by itself distinguish a reconnect
-/// from a newly constructed endpoint that must take a fresh baseline.
+// HerdrSourceID survives edits and monitoring toggles, so it cannot tell a
+// reconnect from a rebuilt runtime that must take a fresh baseline.
 struct AttentionSourceGenerationID: Hashable, Sendable {
     let rawValue: UUID
 
@@ -35,11 +14,9 @@ struct AttentionSourceGenerationID: Hashable, Sendable {
     }
 }
 
-/// Stable request identifier shared by the state machine, notification delivery,
-/// and click routing. The raw value is safe to pass directly to
-/// UNNotificationRequest; the notification layer can use managedPrefix when
-/// removing requests left by an earlier process.
 struct AttentionNotificationID: RawRepresentable, Hashable, Sendable {
+    // Lets the notification layer find requests left behind by an earlier
+    // process, whose IDs this process no longer holds in memory.
     static let managedPrefix = "attention.v1."
 
     let rawValue: String
@@ -49,9 +26,8 @@ struct AttentionNotificationID: RawRepresentable, Hashable, Sendable {
     }
 }
 
-/// Content-independent identity observed for an agent. Terminal IDs are preferred
-/// because they survive pane moves. Pane IDs are used only while terminal metadata
-/// is absent.
+// Terminal IDs come first because they survive pane moves; a pane ID is the
+// fallback only while terminal metadata is absent.
 struct AttentionAgentLocator: Hashable, Sendable {
     enum Target: Hashable, Sendable {
         case terminal(String)
@@ -62,17 +38,13 @@ struct AttentionAgentLocator: Hashable, Sendable {
     let target: Target
 }
 
-/// Platform-neutral notification request. title, subtitle, and body arrive
-/// already rendered from the user's notification templates, so the delivery
-/// layer adds no text of its own and no localized status string is part of this
-/// contract; the glyph a default banner opens with comes from the title
-/// template's `{status_emoji}`. sourcePaneID names the agent pane observed at the
-/// transition; AttentionNoticeStager uses it to look up that pane's current
-/// excerpt before the notice reaches Notification Center. It is not persisted
-/// into the notification payload, and click routing keeps resolving the current
-/// pane through AttentionMonitor.destination(for:).
+// The three strings are fully rendered from the user's templates, so the
+// delivery layer adds no text of its own.
 struct AttentionNotice: Equatable, Sendable {
     let id: AttentionNotificationID
+    // Only for looking up the pane's excerpt before delivery. It is never
+    // persisted in the notification payload, because a click re-resolves the
+    // current pane through destination(for:).
     let sourcePaneID: SourcePaneID
     let threadIdentifier: String
     let title: String
@@ -96,37 +68,28 @@ struct AttentionNotice: Equatable, Sendable {
     }
 }
 
-/// Effects the live notification service applies in order. remove clears both
-/// pending and delivered requests for the ID; removeAll is scoped by
-/// AttentionNotificationID.managedPrefix rather than unrelated app notifications.
 enum AttentionEffect: Equatable, Sendable {
     case deliver(AttentionNotice)
     case remove(AttentionNotificationID)
+    // Scoped to AttentionNotificationID.managedPrefix, never to unrelated app
+    // notifications.
     case removeAll
 }
 
-/// Current click destination. It is returned only while the source has a ready
-/// snapshot and the agent still exists, so callers never send focus or reveal to a
-/// stale pane. Remote destinations open and reveal in Monitor; local destinations
-/// may be passed to FleetStore.focus.
 struct AttentionDestination: Equatable {
     let sourceID: HerdrSourceID
     let isRemote: Bool
     let pane: Pane
 }
 
-/// Complete fleet value consumed by AttentionStateMachine. A source omitted from
-/// sources was intentionally removed from activeSources. An unavailable source is
-/// still monitored but has no trustworthy current snapshot, so its previous agent
-/// state and notification ownership must be retained.
+// A source missing from `sources` was removed on purpose; an unavailable one is
+// still monitored, so the reducer must keep its last known agents.
 struct AttentionFleetObservation: Equatable {
     var sources: [AttentionSourceObservation]
 
-    /// Captures the same filtered parent-agent population used by the menu and
-    /// Monitor, and renders each pane's notification text while the templates and
-    /// the fleet are both readable. Templates come from RowLayoutSetting and
-    /// their variables from FleetStore.rowContext — MainActor Observation state,
-    /// which is why the strings are produced here and not in the reducer.
+    // Text is rendered here because templates (RowLayoutSetting) and their
+    // variables (FleetStore.rowContext) are MainActor Observation state that the
+    // pure reducer cannot touch.
     @MainActor
     init(store: FleetStore) {
         let templates = RowLayoutSetting.shared.layout.notification
@@ -160,13 +123,9 @@ struct AttentionFleetObservation: Equatable {
         self.sources = sources
     }
 
-    /// Renders one pane's notification fields. Variables resolve through
-    /// AgentRowContext.textTemplateValue, so `{agent_icon}` renders empty and
-    /// `{excerpt}` renders empty as well: the read that produces the excerpt for
-    /// this turn has not finished at the transition, and AttentionNoticeStager
-    /// renders the notice again once it has. A pane with no row context resolves
-    /// every variable to empty and therefore reaches the fields rule with
-    /// nothing to say.
+    // `{excerpt}` deliberately resolves to empty here: the read for this turn is
+    // still in flight at the transition, so AttentionNoticeStager renders the
+    // notice a second time once the text lands.
     @MainActor
     private static func observation(
         of pane: Pane,
@@ -188,13 +147,8 @@ struct AttentionFleetObservation: Equatable {
         )
     }
 
-    /// The staged notice with its text rendered again, this time with `excerpt`
-    /// bound to `{excerpt}`, so a template decides where the excerpt goes — or
-    /// leaves it out. Identity and routing are carried over untouched.
-    ///
-    /// nil when the pane has left the snapshot the variables read; the caller
-    /// then keeps the text rendered at the transition rather than presenting a
-    /// banner built from nothing.
+    // nil when the pane has left the snapshot: the caller then keeps the text
+    // rendered at the transition instead of a banner built from nothing.
     @MainActor
     static func rendered(
         _ notice: AttentionNotice,
@@ -215,13 +169,9 @@ struct AttentionFleetObservation: Equatable {
         )
     }
 
-    /// Renders the fields and settles what an empty one means. macOS shows a
-    /// banner with an empty title, subtitle, and body without complaint, so an
-    /// all-empty render — a user who cleared every template, or a pane whose
-    /// variables all resolved empty — falls back to the built-in templates. An
-    /// empty title is then filled from the subtitle, else the first body line,
-    /// and the field it came from is dropped, because the title is the line
-    /// macOS always shows.
+    // macOS accepts an all-empty banner without complaint, hence the fallback to
+    // the built-in templates, and hence promoting a line into an empty title:
+    // the title is the one field macOS always shows.
     static func notificationFields(
         _ templates: NotificationTemplates,
         _ resolve: (String) -> TemplateValue?
@@ -245,13 +195,9 @@ struct AttentionFleetObservation: Equatable {
         )
     }
 
-    /// Renders the body as its surviving lines rather than one string, so the
-    /// caller can promote a line to the title. A line that renders empty is
-    /// left out, which is what keeps a body from carrying a blank line.
-    ///
-    /// No field is trimmed here: renderText already drops the whole render's
-    /// leading and trailing whitespace, so a template left with nothing but a
-    /// discarded separator group yields the empty string.
+    // The body stays split into lines so the caller can promote one to the
+    // title. Nothing is trimmed here because renderText already trims each
+    // render, so an emptied template yields the empty string on its own.
     private static func render(
         _ templates: NotificationTemplates,
         _ resolve: (String) -> TemplateValue?
@@ -278,10 +224,8 @@ struct AttentionSourceObservation: Equatable {
     var availability: Availability
 }
 
-/// One agent as seen at a capture, with the text its notification would carry
-/// already rendered. The reducer decides on the pane's status alone and never
-/// reads these strings, so an edited template or a renamed source changes what
-/// the agent's next attention transition says without delivering anything now.
+// The reducer decides on pane status alone and never compares these strings, so
+// editing a template cannot re-alert an attention state the user already saw.
 struct AttentionAgentObservation: Equatable {
     var pane: Pane
     var title: String
@@ -289,8 +233,8 @@ struct AttentionAgentObservation: Equatable {
     var body: String
 }
 
-/// Pure reducer for attention state. It has no AppKit, UserNotifications,
-/// UserDefaults, Observation, clock, or asynchronous dependencies.
+// Kept free of AppKit, UserNotifications, UserDefaults, Observation, clocks, and
+// concurrency so attention rules can be tested as plain values.
 struct AttentionStateMachine {
     private struct SourceState {
         var generationID: AttentionSourceGenerationID
@@ -301,15 +245,14 @@ struct AttentionStateMachine {
     }
 
     private struct AgentRecord {
-        /// Immutable for the lifetime of this record. If terminal metadata appears
-        /// after a pane-only baseline, aliases are promoted without changing the
-        /// request ID, so the same live notification remains addressable.
+        // Never rewritten, not even when terminal metadata appears after a
+        // pane-only baseline, so a live notification stays addressable.
         let notificationID: AttentionNotificationID
         var terminalID: String?
         var paneID: String
         var observation: AttentionAgentObservation
-        /// true after this reducer emitted deliver for the current attention
-        /// episode. A baseline may contain blocked/done without owning a notice.
+        // A baseline can hold blocked/done agents that own no notification, so
+        // ownership cannot be inferred from status.
         var ownsNotice: Bool
     }
 
@@ -317,8 +260,8 @@ struct AttentionStateMachine {
     private var hasStarted = false
     private var sources: [HerdrSourceID: SourceState] = [:]
 
-    /// Starts one process lifetime. removeAll clears notifications left by a crash;
-    /// enabled sources are then baselined from the supplied current fleet.
+    // removeAll on start clears notifications a previous crash left in
+    // Notification Center.
     mutating func start(
         enabled: Bool,
         fleet: AttentionFleetObservation
@@ -333,9 +276,8 @@ struct AttentionStateMachine {
         return [.removeAll]
     }
 
-    /// Applies the independent notification preference. Re-enabling takes an
-    /// atomic baseline of the current fleet, so attention that predates the toggle
-    /// does not appear as a new transition.
+    // Re-enabling baselines the current fleet so attention that predates the
+    // toggle does not arrive as a new transition.
     mutating func setEnabled(
         _ enabled: Bool,
         fleet: AttentionFleetObservation
@@ -350,9 +292,8 @@ struct AttentionStateMachine {
         return [.removeAll]
     }
 
-    /// Reconciles a full observation. Successful snapshots are authoritative for
-    /// status and disappearance; unavailable sources retain the last successful
-    /// state until a reconnect can provide another comparison point.
+    // Only a ready snapshot proves a status change or a disappearance, so an
+    // unavailable source keeps its agents until a reconnect can be compared.
     mutating func ingest(_ fleet: AttentionFleetObservation) -> [AttentionEffect] {
         guard hasStarted, isEnabled else { return [] }
 
@@ -405,8 +346,8 @@ struct AttentionStateMachine {
         return effects
     }
 
-    /// Ends the process lifetime and instructs delivery to remove every managed
-    /// request, including one no longer represented in memory after a race.
+    // removeAll rather than per-record removes: a request may exist in
+    // Notification Center that this reducer no longer holds.
     mutating func stop() -> [AttentionEffect] {
         guard hasStarted else { return [] }
         hasStarted = false
@@ -415,9 +356,8 @@ struct AttentionStateMachine {
         return [.removeAll]
     }
 
-    /// Resolves a notification request to the latest pane rather than trusting the
-    /// pane ID embedded when the banner was delivered. Unavailable sources return
-    /// nil so click handling can open Monitor without targeting stale state.
+    // Resolves against the latest snapshot instead of the pane seen at delivery,
+    // and skips unavailable sources, so a click never targets a stale pane.
     func destination(for notificationID: AttentionNotificationID) -> AttentionDestination? {
         for (sourceID, source) in sources where source.isAvailable {
             guard let record = source.agents.first(where: {
@@ -560,9 +500,8 @@ struct AttentionStateMachine {
             }) {
                 return index
             }
-            // Promote an earlier pane fallback only when it did not already have a
-            // conflicting terminal identity. Equal pane IDs with two different
-            // terminal IDs are different agents.
+            // Adopt a pane-only record only when it carries no terminal identity:
+            // the same pane ID under two terminal IDs means two different agents.
             return unmatched.sorted().first(where: {
                 records[$0].terminalID == nil && records[$0].paneID == pane.paneId
             })
@@ -608,9 +547,8 @@ struct AttentionStateMachine {
         }
     }
 
-    /// Wraps the text the observation arrived with in a request. The notice is
-    /// built from the transition's observation, so a template edit or a rename
-    /// after delivery leaves the live banner alone.
+    // Text comes from the transition's own observation, so a template edit or a
+    // rename after delivery leaves the live banner alone.
     private func makeNotice(
         id: AttentionNotificationID,
         sourceID: HerdrSourceID,
@@ -655,8 +593,8 @@ struct AttentionStateMachine {
         "attention.source.v1.\(encoded(sourceID.rawValue))"
     }
 
-    /// Base64 does not contain '.', the field separator used above, so arbitrary
-    /// Herdr IDs cannot make two structured identifiers collapse to one string.
+    // Base64 never contains '.', the field separator above, so arbitrary Herdr
+    // IDs cannot make two different identifiers collapse into one string.
     private static func encoded(_ value: String) -> String {
         Data(value.utf8).base64EncodedString()
     }
@@ -668,9 +606,8 @@ private extension AgentStatus {
     }
 }
 
-/// App-owned bridge from Observation to AttentionStateMachine. It emits effects
-/// synchronously on MainActor; a live notification service may enqueue or await
-/// platform work behind the injected closure while tests record values directly.
+// Effects are emitted synchronously on MainActor; the sink is injected so the
+// live service can queue platform work while tests just record values.
 @MainActor
 final class AttentionMonitor {
     private weak var store: FleetStore?
@@ -687,9 +624,9 @@ final class AttentionMonitor {
         self.effectHandler = effectHandler
     }
 
-    /// Starts tracking before FleetStore starts polling. The initial capture is the
-    /// process baseline, and the observation is armed before removeAll reaches the
-    /// effect sink so sink-side work cannot create an unobserved fleet mutation.
+    // Must run before FleetStore starts polling. Observation is armed before the
+    // effects reach the sink, so work done by the sink cannot mutate the fleet
+    // unobserved.
     func start(enabled: Bool) {
         guard !hasStarted, !hasStopped, let store else { return }
         hasStarted = true
@@ -725,8 +662,8 @@ final class AttentionMonitor {
         withObservationTracking {
             _ = AttentionFleetObservation(store: store)
         } onChange: { [weak self] in
-            // Observation invokes onChange on the writer's executor before the
-            // mutation completes. Deferring one MainActor turn reads the new value.
+            // Observation calls onChange on the writer's executor before the
+            // mutation lands; one MainActor hop is needed to read the new value.
             Task { @MainActor [weak self] in
                 self?.consumeObservedChange()
             }
@@ -736,8 +673,8 @@ final class AttentionMonitor {
     private func consumeObservedChange() {
         guard hasStarted, !hasStopped, let store else { return }
         let observation = AttentionFleetObservation(store: store)
-        // Re-arm before invoking the external sink. There is no suspension between
-        // this capture and registration, so subsequent MainActor writes are tracked.
+        // Re-arm before calling the sink: no suspension sits between the capture
+        // and the registration, so no MainActor write can slip through untracked.
         armObservation()
         emit(machine.ingest(observation))
     }

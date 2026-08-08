@@ -1,50 +1,28 @@
-// The template language behind user-customizable agent rows and notifications.
+// Template language for user-customizable agent rows and notifications.
+// The grammar is intentionally total: it has no escape syntax and no error
+// path, so an unmatched `{`, `[`, `}` or `]` is literal text rather than a
+// failure the user has to diagnose.
 //
-// Grammar, with no escape syntax:
-//   {name}      variable; name characters are [A-Za-z0-9_.]
-//   {a|b|c}     fallback: the first alternative that resolves non-empty
-//   [ ... ]     group; renders only when at least one variable inside it
-//               resolved non-empty. A group holding no variable is literal
-//               text and always renders. Groups nest.
-//   everything else is literal text
-//
-// Parsing and rendering are total: there is no error type and no throwing
-// path. A `{` or `[` without its partner, a stray `}` or `]`, and any `{` not
-// followed by name characters and `}` stay literal text. `{}` parses as a
-// variable whose name is empty, which no resolver knows, so it renders empty —
-// as does any name the resolver does not know.
-//
-// Whitespace inside a group is preserved verbatim, because that is how
-// separators are written (`[ · {x}]`); the finished render has its leading and
-// trailing whitespace trimmed.
-//
-// This layer knows nothing about herdr, fonts, or images: variables are opaque
-// names the caller resolves, RowTextStyle is a name the view layer maps to a
-// font, and an icon run carries only an agent id.
+//   {name}      variable, name characters [A-Za-z0-9_.]
+//   {a|b|c}     first alternative that resolves non-empty
+//   [ ... ]     renders only when a variable inside it resolved non-empty;
+//               a group with no variable is literal text. Groups nest.
 
 import Foundation
 
-/// One resolved piece of a rendered template.
 enum TemplateRun: Equatable, Sendable {
     case text(String)
-    /// Brand mark for this agent id; the view layer resolves the asset and size.
     case icon(agent: String)
 }
 
-/// A value a variable can resolve to.
 enum TemplateValue: Equatable, Sendable {
-    /// The empty string counts as EMPTY: it does not satisfy a `{a|b}`
-    /// alternative and does not make a `[...]` group render.
     case text(String)
-    /// Always counts as non-empty. A resolver that has no asset for the agent
-    /// returns nil or empty text instead.
     case icon(agent: String)
 }
 
-/// A parsed template. Parsing never fails.
 struct RowTemplate: Equatable, Sendable {
-    /// The template as the user wrote it. It is the only persisted form; the
-    /// node tree is derived from it, which is why equality compares sources.
+    // Only the source is persisted; the node tree is derived from it, so
+    // equality on the source alone is complete.
     let source: String
 
     private let nodes: [Node]
@@ -59,29 +37,20 @@ struct RowTemplate: Equatable, Sendable {
         lhs.source == rhs.source
     }
 
-    /// Every variable name referenced, in source order, including fallback
-    /// alternatives. The settings pane uses it to warn about names no resolver
-    /// knows. The empty name produced by `{}` is left out — it is not a name a
-    /// user could have meant.
+    // Feeds the settings pane's warning about unknown names, so the empty name
+    // from `{}` is left out: no user meant to write it.
     var variableNames: [String] {
         var names: [String] = []
         Self.collectVariableNames(nodes, into: &names)
         return names
     }
 
-    /// Renders to runs. Adjacent text runs are coalesced, empty text produces
-    /// no run, and the leading and trailing whitespace of the whole render is
-    /// trimmed.
-    ///
-    /// - Parameter resolve: Value for a variable name. nil means the name is
-    ///   unknown and is indistinguishable from `.text("")` in the result.
     func render(_ resolve: (String) -> TemplateValue?) -> [TemplateRun] {
         Self.trimmingOuterWhitespace(Self.evaluate(nodes, resolve).runs)
     }
 
-    /// Text-only render: icon runs contribute nothing to the string, but still
-    /// count as non-empty for `{a|b}` and `[...]`. Used by notifications, where
-    /// the resolver already returns empty for image-only variables.
+    // Notifications carry no images, so icon runs drop out of the string here
+    // while still counting as non-empty for `{a|b}` and `[...]`.
     func renderText(_ resolve: (String) -> TemplateValue?) -> String {
         var text = ""
         for case .text(let part) in render(resolve) { text += part }
@@ -92,14 +61,10 @@ struct RowTemplate: Equatable, Sendable {
 
     private enum Node: Equatable, Sendable {
         case text(String)
-        /// Fallback alternatives in source order; a plain `{name}` holds one.
         case variable([String])
         case group([Node])
     }
 
-    /// Parses until the end of the source, or until the `]` that closes the
-    /// group the caller opened. `closed` reports whether that `]` was found, so
-    /// the caller can fall back to treating its `[` as literal text.
     private static func parse(
         _ characters: [Character],
         from index: inout Int,
@@ -129,10 +94,9 @@ struct RowTemplate: Equatable, Sendable {
                     flushLiteral()
                     nodes.append(.group(group.nodes))
                 } else {
-                    // Unclosed: the bracket becomes literal text. The inner
-                    // parse ran to the end of the source and, having found no
-                    // `]`, produced exactly the nodes this level would have, so
-                    // they are adopted instead of re-parsed.
+                    // The inner parse hit the end of the source, so it already
+                    // produced exactly the nodes this level would produce.
+                    // Adopting them avoids re-parsing the rest of the source.
                     literal.append("[")
                     flushLiteral()
                     nodes.append(contentsOf: group.nodes)
@@ -152,9 +116,7 @@ struct RowTemplate: Equatable, Sendable {
         return (nodes, false)
     }
 
-    /// Reads `{a|b}` starting at the `{`. Returns nil when the braces hold
-    /// anything but name characters and `|`, or when the `}` is missing, which
-    /// leaves the `{` to be consumed as literal text.
+    // nil leaves the `{` to be consumed as literal text.
     private static func scanVariable(
         _ characters: [Character],
         from index: Int
@@ -167,8 +129,8 @@ struct RowTemplate: Equatable, Sendable {
             cursor += 1
         }
         guard cursor < characters.count, characters[cursor] == "}" else { return nil }
-        // Empty alternatives are kept so `{a|}` and `{}` stay one variable with
-        // a name no resolver knows, rather than collapsing to nothing.
+        // Keeping empty alternatives makes `{a|}` and `{}` stay one variable
+        // that renders empty, instead of collapsing to no variable at all.
         let names = content
             .split(separator: "|", omittingEmptySubsequences: false)
             .map(String.init)
@@ -195,10 +157,8 @@ struct RowTemplate: Equatable, Sendable {
 
     // MARK: - Rendering
 
-    /// Renders a node list and reports how many variables it contains and how
-    /// many of them resolved non-empty. A group decides on its own counts, and
-    /// propagates them to its parent whether or not it rendered, so an outer
-    /// group is discarded when the only variables below it stayed empty.
+    // A group propagates its counts to the parent whether or not it rendered,
+    // so an outer group is dropped when every variable below it stayed empty.
     private static func evaluate(
         _ nodes: [Node],
         _ resolve: (String) -> TemplateValue?
@@ -222,6 +182,7 @@ struct RowTemplate: Equatable, Sendable {
                 let group = evaluate(children, resolve)
                 variables += group.variables
                 resolved += group.resolved
+                // A group with no variable is plain literal text: it renders.
                 guard group.variables == 0 || group.resolved > 0 else { continue }
                 for run in group.runs { append(run, to: &runs) }
             }
@@ -256,9 +217,9 @@ struct RowTemplate: Equatable, Sendable {
         }
     }
 
-    /// Trims the render's outer whitespace only. Interior whitespace, including
-    /// a separator a group contributed, is untouched, and a leading or trailing
-    /// icon run shields the text next to it from trimming.
+    // Only the outer edges are trimmed: interior whitespace is how separators
+    // are written (`[ · {x}]`), and an outermost icon run shields the text
+    // beside it.
     private static func trimmingOuterWhitespace(_ runs: [TemplateRun]) -> [TemplateRun] {
         var runs = runs
         if case .text(let text)? = runs.first {
@@ -292,7 +253,7 @@ struct RowTemplate: Equatable, Sendable {
 }
 
 extension RowTemplate: Codable {
-    /// Coded as its source string, so a stored layout reads as plain templates.
+    // Coded as a bare string so a stored layout stays hand-editable.
     init(from decoder: any Decoder) throws {
         self.init(try decoder.singleValueContainer().decode(String.self))
     }
@@ -303,9 +264,9 @@ extension RowTemplate: Codable {
     }
 }
 
-/// Preset appearance of one side of a row line. The view layer owns the font
-/// and color each name stands for; `status` is the one that follows the pane's
-/// AgentStatus color and drops it while a menu row is hovered.
+// The view layer owns the font and color each name stands for. `status` is the
+// only one that follows the pane's AgentStatus color, and drops it while a menu
+// row is hovered.
 enum RowTextStyle: String, Codable, CaseIterable, Sendable {
     case heading
     case body
@@ -313,9 +274,8 @@ enum RowTextStyle: String, Codable, CaseIterable, Sendable {
     case monospace
     case status
 
-    /// A name this build does not know reads as `body`, so a layout stored by a
-    /// newer version loses one line's appearance instead of failing to decode
-    /// and dropping every customization.
+    // A style added by a newer build must not fail the whole decode and throw
+    // away every customization, so an unknown name degrades to `body`.
     init(from decoder: any Decoder) throws {
         let rawValue = try decoder.singleValueContainer().decode(String.self)
         self = RowTextStyle(rawValue: rawValue) ?? .body

@@ -1,8 +1,3 @@
-// Verifies fleet-level source aggregation, runtime reconciliation, focus
-// routing, and background excerpt reads without opening SSH connections or
-// Unix sockets. Injected Stores and tunnels reproduce cross-endpoint pane IDs,
-// disconnections, lifecycle replacement, and overlapping SwiftUI surfaces.
-
 import Foundation
 import XCTest
 @testable import Shepherd
@@ -177,7 +172,6 @@ final class FleetStoreTests: XCTestCase {
 
         fleet.start()
 
-        // No menu or Monitor surface is mounted; the excerpt still loads.
         let backgroundExcerptPublished = await waitUntil {
             fleet.agentExcerpt(for: sourcePaneID)?.text ==
                 "Keeping the menu excerpt alive"
@@ -439,7 +433,8 @@ final class FleetStoreTests: XCTestCase {
     func test一部が未接続でもReadyの接続先を表示状態に使う() {
         let readyRemote = snapshot(status: .working, paneID: "w2:p1")
 
-        // Disconnected sources do not enter the snapshot array. If even one is ready, its state is used.
+        // Disconnected sources contribute no snapshot, so one element models a
+        // fleet where the rest dropped out.
         XCTAssertEqual(FleetStore.aggregateMenuBarState([readyRemote]), .working)
         XCTAssertEqual(FleetStore.aggregateMenuBarState([]), .disconnected)
     }
@@ -452,13 +447,13 @@ final class FleetStoreTests: XCTestCase {
 
     @MainActor
     func testローカルと有効な複数Remoteを独立して開始停止する() throws {
-        // The expected headerTitle values depend on the display language, so pin it
-        // to the base language (English) so the host machine's OS language cannot affect them.
+        // headerTitle is localized, so pin the language to keep the host
+        // machine's OS setting out of the expectations.
         let originalLanguage = LanguageSetting.shared.selection
         LanguageSetting.shared.selection = .english
         defer { LanguageSetting.shared.selection = originalLanguage }
 
-        // The local headerTitle also depends on the section-title setting, so pin it to standard.
+        // The local headerTitle also follows the section-title setting.
         let originalTitleStyle = LocalSectionTitleSetting.shared.style
         LocalSectionTitleSetting.shared.style = .standard
         defer { LocalSectionTitleSetting.shared.style = originalTitleStyle }
@@ -639,7 +634,6 @@ final class FleetStoreTests: XCTestCase {
         XCTAssertTrue(tunnels.isEmpty, "表示 OFF の remote が tunnel を作った")
         XCTAssertEqual(fleet.menuBarState, .disconnected)
 
-        // Turning visibility back on resumes monitoring using the preserved isEnabled == true as-is.
         try fleet.setRemoteVisible(id: remote.id, isVisible: true)
         XCTAssertEqual(persisted.first?.isVisible, true)
         XCTAssertEqual(persisted.first?.isEnabled, true)
@@ -649,7 +643,6 @@ final class FleetStoreTests: XCTestCase {
         XCTAssertEqual(tunnels.first?.startCallCount, 1)
         XCTAssertEqual(fleet.menuBarState, .blocked)
 
-        // Turning visibility off also stops a monitoring-enabled remote, but does not rewrite isEnabled.
         try fleet.setRemoteVisible(id: remote.id, isVisible: false)
         XCTAssertEqual(persisted.first?.isVisible, false)
         XCTAssertEqual(persisted.first?.isEnabled, true)
@@ -983,7 +976,8 @@ final class FleetStoreTests: XCTestCase {
         let firstSource = try XCTUnwrap(fleet.monitoredSource(id: first.id))
         let thirdSource = try XCTUnwrap(fleet.monitoredSource(id: third.id))
 
-        // Move the last item (index 2) to the front, using the (IndexSet, Int) that onMove passes as-is.
+        // The offsets are what SwiftUI's onMove hands over, so they reach the
+        // store unchanged.
         try fleet.moveRemote(fromOffsets: IndexSet(integer: 2), toOffset: 0)
 
         XCTAssertEqual(saved.map(\.id), [third.id, first.id, disabled.id])
@@ -1037,7 +1031,7 @@ final class FleetStoreTests: XCTestCase {
         let localBefore = localCounter.count
         let remoteBefore = remoteCounters[0].count
 
-        // A source whose monitoring is enabled during the sleep transition also does not start polling until resume.
+        // A source that gains monitoring mid-sleep must also wait for resume.
         try fleet.setRemoteEnabled(id: dormant.id, isEnabled: true)
         try? await Task.sleep(for: .milliseconds(30))
         XCTAssertEqual(localCounter.count, localBefore, "suspend中にlocalがpollした")
@@ -1102,8 +1096,6 @@ final class FleetStoreTests: XCTestCase {
         )
     }
 
-    /// An immediately responding Store that only counts poll calls. Observes the
-    /// boundary where polling stops during sleep without a real socket.
     @MainActor
     private func countingStore(
         counter: CallCounter,
@@ -1135,7 +1127,8 @@ final class FleetStoreTests: XCTestCase {
         return true
     }
 
-    /// Waits for an increase in poll count, which cannot be pinned to an XCTestExpectation, as a state change observed back on the MainActor.
+    // Poll counts and published excerpts change with no hook to fulfill an
+    // XCTestExpectation, so the condition is sampled instead.
     @MainActor
     private func waitUntil(
         timeout: Duration = .seconds(1),
@@ -1150,7 +1143,8 @@ final class FleetStoreTests: XCTestCase {
         return condition()
     }
 
-    /// Yields the executor to already-enqueued MainActor tasks, fully waiting out RPC completions in flight just before suspend.
+    // Waits out the RPCs that were already in flight when polling suspended,
+    // so their completions cannot be counted as polls after the suspend.
     @MainActor
     private func drainMainActor() async {
         for _ in 0..<20 {
@@ -1180,8 +1174,6 @@ private enum FleetTestError: Error, Equatable {
     case saveFailed
 }
 
-/// One-shot MainActor gate used to prove that each focus phase keeps its caller
-/// suspended until the next phase is allowed to start.
 @MainActor
 private final class FleetFocusGate {
     private var continuation: CheckedContinuation<Void, Never>?
@@ -1204,7 +1196,8 @@ private final class FleetFocusGate {
     }
 }
 
-/// A lock-guarded counter for counting RPC calls from the dataSource's @Sendable closures.
+// dataSource closures are @Sendable and may run off the main actor, hence the
+// lock.
 private final class CallCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0

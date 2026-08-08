@@ -1,42 +1,15 @@
-// A single agent's row (AgentRow) and the per-workspace headed list
-// (AgentGroupList).
-//
-// A row is a fixed status icon plus the lines of the RowLayout in effect: each
-// line draws a left and a right template, each with its own RowTextStyle
-// preset, and a line whose two sides both render empty is dropped. Menu rows
-// keep the height of a line that reads {excerpt} across the loading and empty
-// states so the panel does not resize when the excerpt arrives; Monitor rows
-// show that line only once text is available.
-//
-// This file owns what a preset looks like (font, weight, hierarchical color,
-// {agent_icon} size) and nothing about where values come from: AgentRowContext
-// resolves every variable name, and the caller builds one per pane. Row colors
-// stay hierarchical or branch on hover so the single foregroundStyle switch in
-// `body` inverts the whole row for the menu's selected state.
-//
-// A local row's main content is a Button carrying agent.focus. A remote row's
-// main content remains static. AgentGroupList constructs the cross-source
-// SourcePaneID used by excerpts, notification reveal, and ScrollViewReader
-// identity.
-
 import AppKit
 import SwiftUI
 
-/// Per-workspace heading (caption) + vertically stacked AgentRows. Owns no
-/// scrolling or sizing, so the caller wraps it in a ScrollView or similar.
-/// The click behavior of a row (whether to close the panel in addition to
-/// focusing the pane, etc.) is decided by the caller via onFocus.
 struct AgentGroupList: View {
     let sourceID: HerdrSourceID
     let groups: [(workspace: Workspace, panes: [Pane])]
     let hoverStyle: AgentRow.HoverStyle
-    /// Template values for one row. `groups` and this lookup are read from the
-    /// same snapshot, so nil means the pane is gone and the row is skipped.
+    // `groups` and this lookup come from the same snapshot, so nil means the
+    // pane is gone and the row is dropped rather than drawn stale.
     let rowContext: (SourcePaneID) -> AgentRowContext?
     let highlightedPaneID: SourcePaneID?
     let excerptState: ((SourcePaneID) -> AgentExcerptState?)?
-    /// Menu rows reserve the height of the {excerpt} line across loading,
-    /// available, and empty states. Monitor rows render only an available Excerpt.
     let reservesExcerptLine: Bool
     let onFocus: ((Pane) -> Void)?
 
@@ -97,19 +70,15 @@ struct AgentGroupList: View {
                             { action(identifiedPane.pane) }
                         }
                     )
-                    // ForEach identity drives diffing, while this explicit view
-                    // identity is the ScrollViewReader target used by MonitorView.
+                    // ForEach identity only drives diffing; MonitorView's
+                    // ScrollViewReader needs this explicit view identity.
                     .id(identifiedPane.id)
                 }
             }
         }
-        // The horizontal 5pt is the inset the highlight keeps from the edge of
-        // the surface, the same value as the MenuItems at the bottom of
-        // MenuPanel. Combined with the 12pt text inset inside headings and
-        // rows, text starts 17pt from the surface edge, aligned across all rows.
-        // No vertical padding here: the gap to the source heading, between
-        // sections, and to the surface edge differ per placement context, so
-        // SourceList owns those values.
+        // 5pt is the inset MenuPanel's MenuItems keep from the surface edge,
+        // so highlights line up in the same panel. Vertical spacing differs
+        // per placement, so SourceList owns it.
         .padding(.horizontal, 5)
     }
 
@@ -127,34 +96,20 @@ struct AgentGroupList: View {
 }
 
 struct AgentRow: View {
-    /// Hover highlight style. The same row is placed in both the monitor
-    /// window's List and the menu panel, but the native selection idiom differs
-    /// per surface, so the caller chooses.
+    // The same row appears in the monitor window's List and in the menu panel,
+    // whose native selection idioms differ, so the caller picks.
     enum HoverStyle {
-        /// For the monitor window's List. Lays down a subtle gray (quaternary) only; foreground colors are unchanged.
         case list
-        /// For the menu bar panel. Reproduces NSMenu's selection state (accent
-        /// color background + selected foreground color) to match the MenuItems
-        /// at the bottom of MenuPanel.
+        // Reproduces NSMenu selection to match MenuPanel's MenuItems.
         case menu
     }
 
-    /// Everything the templates read, plus the pane the row is drawn for: the
-    /// status icon, the `status` preset's color, and the per-agent line
-    /// override all come from `context.pane`.
     let context: AgentRowContext
     let hoverStyle: HoverStyle
-    /// Programmatic, transient emphasis used after a notification opens Monitor.
-    /// It does not change clickability or establish persistent selection.
     let isRevealed: Bool
-    /// Load state of the excerpt. nil means the preference is off or the pane
-    /// has no supported terminal grammar; `{excerpt}` then resolves empty and
-    /// no line is reserved.
     let excerptState: AgentExcerptState?
-    /// Whether loading and empty states reserve the height of the {excerpt} line.
     let reservesExcerptLine: Bool
-    /// Jump-to action on row click. nil marks a remote, monitor-only row,
-    /// which gets no Button and no hover feedback.
+    // nil marks a remote, monitor-only row: no Button, no hover feedback.
     let onFocus: (() -> Void)?
 
     @State private var isHovered = false
@@ -191,9 +146,8 @@ struct AgentRow: View {
         .contentShape(Rectangle())
         .padding(.vertical, 3)
         .padding(.horizontal, 12)
-        // The foreground color is switched in one place here. Every preset
-        // expresses its color as a hierarchical style (.secondary / .primary)
-        // or branches on hover, so the menu inversion needs no per-line handling.
+        // Every preset states its color hierarchically or branches on hover, so
+        // this single switch inverts the whole row with no per-line handling.
         .foregroundStyle(isMenuHighlighted ? Color(nsColor: .selectedMenuItemTextColor) : Color.primary)
         .background(
             rowBackground,
@@ -202,8 +156,6 @@ struct AgentRow: View {
         .onHover { isHovered = onFocus == nil ? false : $0 }
     }
 
-    /// The status icon is a fixed slot outside the templates: it sits beside
-    /// the line stack, centered over the whole row, and is always drawn.
     private var rowContent: some View {
         HStack(spacing: 8) {
             Image(nsImage: StatusIcons.icon(for: context.pane.agentStatus))
@@ -215,14 +167,11 @@ struct AgentRow: View {
         }
     }
 
-    /// Lines in effect for this pane. Read during body evaluation so an edit in
-    /// the settings pane redraws every mounted row.
+    // Read during body evaluation so a settings edit redraws mounted rows.
     private var lines: [RowLine] {
         RowLayoutSetting.shared.layout.lines(forAgent: context.pane.agent)
     }
 
-    /// Variable name that carries the extracted agent message. A line naming it
-    /// is the one whose height the menu reserves.
     private static let excerptVariable = "excerpt"
 
     @ViewBuilder
@@ -241,25 +190,24 @@ struct AgentRow: View {
         left: [TemplateRun],
         right: [TemplateRun]
     ) -> some View {
-        // Aligning both sides at the center of their lowercase body keeps the
-        // smaller status caption optically level with the taller text beside
-        // it. Line-box .center sits the caption visibly high and
-        // .firstTextBaseline visibly low, because the two fonts distribute
-        // leading and descent differently. Anchoring on the first text
+        // Aligning at the center of the lowercase body keeps a small status
+        // caption optically level with taller text: line-box .center sits it
+        // visibly high and .firstTextBaseline visibly low, because the fonts
+        // distribute leading and descent differently. Anchoring on the first
         // baseline also keeps the right side beside the first line when the
-        // left side wraps across line.maxLines rows.
+        // left side wraps.
         HStack(alignment: .xHeightCenter, spacing: 6) {
             runsView(left, style: line.leftStyle)
                 .lineLimit(line.maxLines)
                 .truncationMode(.tail)
                 .alignmentGuide(.xHeightCenter) { xHeightCenter($0, line.leftStyle) }
-            // A line with an empty right template spends none of its width on
-            // the gap, so the left side truncates at the same column it would
-            // reach on a line that has no right template at all.
+            // Skipping the Spacer keeps an empty right template from spending
+            // width, so the left side truncates at the same column it would
+            // reach on a line with no right template at all.
             if !right.isEmpty {
                 Spacer()
-                // The right side keeps its width and the left side gives way, so
-                // a long title truncates instead of pushing the status off the row.
+                // Priority keeps the status on the row and truncates the title
+                // instead of pushing it off.
                 runsView(right, style: line.rightStyle)
                     .lineLimit(1)
                     .layoutPriority(1)
@@ -268,21 +216,14 @@ struct AgentRow: View {
         }
     }
 
-    /// Guide value for `.xHeightCenter`: the vertical center of the first
-    /// line's lowercase body, half an x-height above the baseline. The
-    /// x-height comes from the preset's AppKit font, the same source the
-    /// mark sizing uses.
     private func xHeightCenter(_ d: ViewDimensions, _ style: RowTextStyle) -> CGFloat {
         d[.firstTextBaseline]
             - NSFont.preferredFont(forTextStyle: style.appKitTextStyle).xHeight / 2
     }
 
-    /// Menu rows keep this line's metrics mounted for every excerpt state,
-    /// preventing the panel from resizing when the first Excerpt arrives. The
-    /// placeholder alone decides the height in all three states — it reserves
-    /// line.maxLines rows, so a wrapping excerpt cannot grow the panel either;
-    /// while loading it is also what the row shows, so a line mixing {excerpt}
-    /// with other variables displays only the placeholder until text arrives.
+    // The placeholder alone sets the height in all three states, so the menu
+    // panel does not resize when the first excerpt arrives and a wrapping
+    // excerpt cannot grow it either.
     @ViewBuilder
     private func reservedExcerptLine(
         _ line: RowLine,
@@ -300,19 +241,16 @@ struct AgentRow: View {
             excerptPlaceholder(line)
                 .hidden()
                 .frame(maxWidth: .infinity, alignment: .leading)
-                // Overlay content does not participate in vertical measurement,
-                // so fallback glyph metrics cannot resize the menu after the
-                // placeholder is replaced. topLeading starts an excerpt shorter
-                // than the reserved rows at the first one instead of centering.
+                // Overlay content does not take part in vertical measurement,
+                // so fallback glyph metrics cannot resize the menu. topLeading
+                // starts a short excerpt at the first reserved row.
                 .overlay(alignment: .topLeading) {
-                    // fixedSize: the overlay proposes the placeholder's laid-out
-                    // height, which pixel alignment can leave a fraction below
-                    // what maxLines wrapped lines need (45.0pt snaps to 44.5pt
-                    // at 2x for proportional callout); Text answers such a
-                    // proposal by dropping a whole line and truncating early.
-                    // Ignoring the height proposal draws all maxLines rows; any
-                    // overflow past the reserved box stays sub-pixel because
-                    // both sides use the same font metrics.
+                    // The overlay proposes the placeholder's laid-out height,
+                    // which pixel alignment can leave a fraction short of what
+                    // maxLines wrapped lines need (45.0pt snaps to 44.5pt at 2x
+                    // for proportional callout), and Text answers by dropping a
+                    // line. Ignoring the proposal draws every row; overflow
+                    // stays sub-pixel because both sides use the same metrics.
                     lineContent(line, left: left, right: right)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -340,19 +278,17 @@ struct AgentRow: View {
 
     // MARK: - Runs
 
-    /// Draws one side of a line. A render with no icon is a single text run and
-    /// becomes one Text; an icon run splits the side into an HStack whose
-    /// spacing is 0, because the separation around a mark is written in the
-    /// template (`{agent_icon}[ {…}]`) rather than imposed here.
     @ViewBuilder
     private func runsView(_ runs: [TemplateRun], style: RowTextStyle) -> some View {
         if runs.count == 1, case .text(let text) = runs[0] {
             Text(text)
                 .modifier(rowTextStyle(style))
         } else {
+            // spacing 0: the separation around a mark is written in the
+            // template (`{agent_icon}[ {…}]`), not imposed here.
             HStack(spacing: 0) {
-                // Runs carry no identity of their own, and a re-render replaces
-                // the whole line, so position is the only identity available.
+                // Runs carry no identity and a re-render replaces the whole
+                // line, so position is the only identity available.
                 ForEach(runs.indices, id: \.self) { index in
                     switch runs[index] {
                     case .text(let text):
@@ -366,12 +302,10 @@ struct AgentRow: View {
         }
     }
 
-    /// The brand mark. Its fill is switched by the setting (colorAgentIconsKey):
-    /// mono renders the solid-black asset as a template so it follows the line's
-    /// foreground color and dark mode; color renders the original to preserve
-    /// the brand colors. The agent name is relegated to the hover tooltip.
-    /// An agent with no asset draws nothing — the resolver already reports such
-    /// agents as empty, so a `{agent_icon|…}` fallback has taken over by here.
+    // The mono asset is solid black, so it is drawn as a template to follow the
+    // line color and dark mode; color keeps the brand hues. An agent with no
+    // asset draws nothing, because the resolver already reported it empty and a
+    // `{agent_icon|…}` fallback has taken over.
     @ViewBuilder
     private func agentIcon(_ agent: String, style: RowTextStyle) -> some View {
         let iconStyle: AgentIconStyle = colorAgentIcons ? .color : .mono
@@ -386,9 +320,8 @@ struct AgentRow: View {
         }
     }
 
-    /// Square edge of a mark. 11pt was tuned against the 12pt .callout of the
-    /// sub-line, so each preset keeps that ratio against its own font size and a
-    /// mark on a caption line reads at caption weight.
+    // 11pt was tuned against the 12pt .callout sub-line; keeping that ratio
+    // sizes a mark against whichever preset it sits in.
     private static func iconSize(for style: RowTextStyle) -> CGFloat {
         (NSFont.preferredFont(forTextStyle: style.appKitTextStyle).pointSize * 11 / 12).rounded()
     }
@@ -403,9 +336,6 @@ struct AgentRow: View {
 
     // MARK: - Hover
 
-    /// Whether we are hovered in menu style. The foreground color inversion
-    /// happens only in this state; list style lays down a background only and
-    /// keeps text colors at their normal appearance.
     private var isMenuHighlighted: Bool { isHovered && hoverStyle == .menu }
 
     private var rowBackground: AnyShapeStyle {
@@ -417,9 +347,8 @@ struct AgentRow: View {
         }
     }
 
-    /// menu matches the corner radius of MenuPanel's MenuItems (radius 9 = the
-    /// concentric value of the panel's ~14pt outer corner radius minus the 5pt
-    /// inset), keeping highlight shapes consistent within the same panel.
+    // 9 is the concentric radius of MenuPanel's ~14pt outer corner minus the
+    // 5pt inset, so the highlight matches the MenuItems below it.
     private var hoverCornerRadius: CGFloat {
         switch hoverStyle {
         case .list: 6
@@ -428,9 +357,8 @@ struct AgentRow: View {
     }
 }
 
-/// Appearance of one RowTextStyle preset. Colors are hierarchical or branch on
-/// hover, never an absolute Color, so the row's single foregroundStyle switch
-/// still inverts the line when a menu row is highlighted.
+// Colors stay hierarchical or branch on hover, never an absolute Color, so the
+// row's single foregroundStyle switch still inverts a highlighted menu line.
 private struct RowTextStyleModifier: ViewModifier {
     let style: RowTextStyle
     let statusColor: Color
@@ -448,14 +376,13 @@ private struct RowTextStyleModifier: ViewModifier {
         case .monospace:
             content.font(.callout.monospaced()).foregroundStyle(.secondary)
         case .status:
-            // Native menus uniformly invert selected text to the selected
-            // foreground color, so only while hovered in menu style we drop the
-            // status's semantic color and follow the parent foreground color.
+            // Native menus invert selected text uniformly, so the semantic
+            // status color gives way to the parent color while highlighted.
             //
-            // Semibold: this is the one preset drawn in a saturated hue rather
-            // than a hierarchical style, and at caption size those hues carry
-            // too little contrast against the light menu background. The added
-            // stroke weight restores legibility without darkening the hue.
+            // Semibold: this is the one preset drawn in a saturated hue, and at
+            // caption size those hues carry too little contrast on the light
+            // menu background. Extra stroke weight restores it without
+            // darkening the hue.
             content
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(
@@ -467,12 +394,10 @@ private struct RowTextStyleModifier: ViewModifier {
     }
 }
 
-/// Alignment for the two sides of a row line. Each side sets its guide to the
-/// x-height center of its own font (see AgentRow.xHeightCenter); the default
-/// only covers views that never set the guide, such as the Spacer between the
-/// sides, which no other child aligns against.
 private extension VerticalAlignment {
     struct XHeightCenterID: AlignmentID {
+        // Both sides set the guide themselves; this only covers views that
+        // never do, such as the Spacer between them.
         static func defaultValue(in context: ViewDimensions) -> CGFloat {
             context[VerticalAlignment.center]
         }
@@ -482,8 +407,8 @@ private extension VerticalAlignment {
 }
 
 private extension RowTextStyle {
-    /// AppKit counterpart of the preset's font, used only to size a mark
-    /// against the text beside it. The text itself is drawn with SwiftUI fonts.
+    // Used only to measure a mark against the text beside it; the text itself
+    // is drawn with SwiftUI fonts.
     var appKitTextStyle: NSFont.TextStyle {
         switch self {
         case .heading: .body
@@ -494,10 +419,8 @@ private extension RowTextStyle {
 }
 
 extension AgentStatus {
-    /// Semantic color for each state. Shared by AgentRow's status preset and
-    /// the dots in the pop-out window's header summary. Matches the colors the
-    /// circles are stroked with (StatusIcons: statusWorking / systemGreen /
-    /// systemRed) to keep the visual language consistent.
+    // Matches the colors StatusIcons strokes its circles with (statusWorking /
+    // systemGreen / systemRed).
     var indicatorColor: Color {
         switch self {
         case .working: .statusWorking

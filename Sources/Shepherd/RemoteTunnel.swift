@@ -1,32 +1,10 @@
-// Layer that mirrors a remote Herdr's JSON API socket onto a local Unix socket via
-// an OpenSSH process owned by Shepherd. The endpoint's persistent settings are
-// owned by RemoteSourceConfiguration; this file owns the following runtime
-// resources:
-//
-// - Discovery of the remote socket path via `herdr status server --json` over SSH
-// - A UserDefaults cache of the discovered path, discarded only on a connection
-//   failure before ready
-// - An owner-only temporary directory and the forwarding socket inside it
-// - One `ssh -N -L local_socket:remote_socket` process per endpoint
-// - Reconnection with exponential backoff after process exit
-//
-// The Herdr socket API is a full-control API that can also run agent.focus and
-// server.stop, so it is never exposed on a TCP port. The local socket path takes
-// no user input and lives only under a directory mkdtemp created with mode 0700.
-// SSH multiplexing and backgrounding are disabled on the command line so the
-// forward's lifetime matches the process Shepherd launched.
-
 import Darwin
 import Foundation
 
 // MARK: - Public boundary used by EndpointMonitor
 
-/// Boundary that starts/stops the tunnel for one remote endpoint and reports state
-/// transitions on the MainActor. `stop()` cancels the supervision task, and that
-/// task's cancellation handler terminates the SSH process it owns. `.stopped` is
-/// published immediately on the call, but reaping the process and removing the
-/// stale socket complete in the background, so calling `start()` on the same
-/// instance right away resumes only after the previous task finishes.
+// stop() publishes .stopped at once, but reaping the SSH process runs in the
+// background, so an immediate start() resumes only after the previous task ends.
 @MainActor
 protocol RemoteTunnelManaging: AnyObject {
     var configuration: RemoteSourceConfiguration { get }
@@ -38,10 +16,8 @@ protocol RemoteTunnelManaging: AnyObject {
     func stop()
 }
 
-/// Connection state combining the SSH tunnel and the remote Herdr discovery.
-/// `.ready` means not just that the local listener exists but that a ping response
-/// has been received through that listener. Whether the Herdr protocol is supported
-/// is decided by the upstream monitor that reads the ping.
+// .ready needs a ping answered through the local listener, not just the listener
+// itself. Protocol support is judged upstream, not here.
 enum RemoteTunnelState: Equatable, Sendable {
     case stopped
     case discovering(attempt: Int)
@@ -51,10 +27,6 @@ enum RemoteTunnelState: Equatable, Sendable {
     case failed(failure: RemoteTunnelFailure)
 }
 
-/// Error that lets the settings UI and logs read the failed phase, cause, and exit
-/// status in structured form. `diagnostic` is the SSH stderr or a decoder/probe
-/// error, capped at 4 KiB after control-character stripping; it never contains
-/// private keys or socket payloads.
 struct RemoteTunnelFailure: Error, Equatable, Sendable {
     enum Phase: String, Equatable, Sendable {
         case discovery
@@ -80,19 +52,13 @@ struct RemoteTunnelFailure: Error, Equatable, Sendable {
     let exitStatus: Int32?
     let diagnostic: String
 
-    /// With an invalid remote path, or when a regular file occupies the spot inside
-    /// the private directory, no process is launched. Everything else is retried,
-    /// since it can recover through external changes to the network, the auth agent,
-    /// or the Herdr process.
+    // Everything but a bad socket path can recover on its own once the network,
+    // the auth agent, or the remote Herdr changes.
     var isRetryable: Bool {
         kind != .invalidRemoteSocket
     }
 }
 
-/// Boundary that stores the remote Herdr socket path per endpoint configuration.
-/// The path is an SSH forwarding target, not a credential, but to avoid connecting
-/// to the wrong host after a configuration change, load returns only entries whose
-/// stable ID, SSH alias, and session all match.
 struct RemoteSocketPathCache: Sendable {
     let load: @Sendable (RemoteSourceConfiguration) -> String?
     let store: @Sendable (String?, RemoteSourceConfiguration) -> Void
@@ -104,9 +70,6 @@ struct RemoteSocketPathCache: Sendable {
         store: { _, _ in }
     )
 
-    /// UserDefaults implementation that survives app restarts. Read-modify-write for
-    /// multiple sources happens inside a lock, so a concurrent update never loses
-    /// another source's entry.
     static func userDefaults(_ defaults: UserDefaults) -> RemoteSocketPathCache {
         let storage = UserDefaultsRemoteSocketPathStorage(defaults: defaults)
         return RemoteSocketPathCache(
@@ -123,6 +86,8 @@ private struct RemoteSocketPathCacheEntry: Codable {
     let sessionName: String?
     let socketPath: String
 
+    // A cached path from a different destination would forward to the wrong host,
+    // so the entry is dropped unless the alias and session still match.
     func matches(_ configuration: RemoteSourceConfiguration) -> Bool {
         sshAlias == configuration.sshAlias
             && sessionName == configuration.normalizedSessionName
@@ -131,6 +96,8 @@ private struct RemoteSocketPathCacheEntry: Codable {
 
 private final class UserDefaultsRemoteSocketPathStorage: @unchecked Sendable {
     private let defaults: UserDefaults
+    // All sources share one key, so read-modify-write must be serialized or a
+    // concurrent store drops another source's entry.
     private let lock = NSLock()
 
     init(defaults: UserDefaults) {
@@ -176,11 +143,6 @@ private final class UserDefaultsRemoteSocketPathStorage: @unchecked Sendable {
     }
 }
 
-/// Production implementation that validates the remote configuration and owns the
-/// private socket workspace and the supervision task. Each instance corresponds to
-/// one RemoteSourceConfiguration and is swapped for a new instance on configuration
-/// change, so the old SSH process and the new configuration's callbacks never mix
-/// into the same state.
 @MainActor
 final class RemoteTunnelManager: RemoteTunnelManaging {
     let configuration: RemoteSourceConfiguration
@@ -199,9 +161,6 @@ final class RemoteTunnelManager: RemoteTunnelManaging {
     private var wantsRunning = false
     private var generation: UInt64 = 0
 
-    /// Production initializer using `/usr/bin/ssh` and the POSIX Unix socket probe.
-    /// If configuration validation or creation of the private runtime directory
-    /// fails, it throws before any SSH process is launched.
     init(configuration: RemoteSourceConfiguration) throws {
         let configuration = try configuration.validated()
         let workspace = try PrivateTunnelSocketWorkspace.create()
@@ -216,10 +175,8 @@ final class RemoteTunnelManager: RemoteTunnelManaging {
         remoteSocketPathCache = .live
     }
 
-    /// Test boundary that swaps out Process, time, the filesystem, and ping.
-    /// localSocketPath goes through the same checks in the command builder as
-    /// production, but this initializer does not own the directory the test provided,
-    /// so it never deletes it.
+    // Test seam. The caller owns the directory holding localSocketPath, so
+    // runtimeDirectoryPath stays nil and deinit never removes it.
     init(
         configuration: RemoteSourceConfiguration,
         localSocketPath: String,
@@ -313,11 +270,6 @@ final class RemoteTunnelManager: RemoteTunnelManaging {
 
 // MARK: - SSH argv
 
-/// Executable, argv, stdin, and environment delta handed to Foundation.Process.
-/// Only the short-lived discovery command, which feeds a fixed script to the remote
-/// shell, carries `standardInput`; everything else leaves it nil and uses
-/// `/dev/null`. `environmentOverrides` overlays the parent process's environment,
-/// so PATH and SSH_AUTH_SOCK are not dropped.
 struct RemoteProcessCommand: Equatable, Sendable {
     let executablePath: String
     let arguments: [String]
@@ -331,16 +283,12 @@ enum SSHCommandBuilderError: Error, Equatable {
     case invalidRemoteSocketPath(String)
 }
 
-/// Pure functions that assemble the `/usr/bin/ssh` argv without going through a
-/// local shell. OpenSSH does not preserve argv boundaries for the remote command
-/// and hands it to the destination's login shell, so the only dynamic command token
-/// is the session name that RemoteSourceConfiguration validated against Herdr's
-/// ASCII grammar. Binary candidates are never extracted from the remote as strings;
-/// they are executed, still quoted, inside the fixed script passed via stdin.
+// OpenSSH joins the remote command back into one string and hands it to the
+// destination's login shell, so the argv here keeps exactly one dynamic remote
+// token: the session name already validated against Herdr's ASCII grammar.
 enum SSHCommandBuilder {
     private static let executablePath = "/usr/bin/ssh"
 
-    /// One-shot command that fetches the remote Herdr server's absolute socket path.
     static func status(
         for configuration: RemoteSourceConfiguration
     ) throws -> RemoteProcessCommand {
@@ -357,7 +305,6 @@ enum SSHCommandBuilder {
         )
     }
 
-    /// Long-running command that forwards the discovered remote socket to the private local socket.
     static func tunnel(
         for configuration: RemoteSourceConfiguration,
         localSocketPath: String,
@@ -386,9 +333,9 @@ enum SSHCommandBuilder {
         )
     }
 
-    /// Pins down, on the command line, that no prompt can be answered from the GUI
-    /// and that the supervisor owns the process's lifetime. Connection details such
-    /// as ProxyJump, IdentityFile, and IdentityAgent are read from the OpenSSH config.
+    // A GUI app can answer no prompt, and multiplexing or backgrounding would
+    // outlive the process Shepherd supervises. Connection details such as
+    // ProxyJump and IdentityFile still come from the user's OpenSSH config.
     private static let connectionPolicyOptions = [
         "-o", "BatchMode=yes",
         "-o", "NumberOfPasswordPrompts=0",
@@ -404,12 +351,12 @@ enum SSHCommandBuilder {
         "-o", "RequestTTY=no",
     ]
 
-    /// `-n` and `StdinNull=yes` are omitted because the resolver script is fed through SSH stdin.
+    // `-n` and StdinNull=yes are left out: the resolver script arrives on SSH stdin.
     private static let discoveryOptions = ["-T"] + connectionPolicyOptions
 
-    /// `ClearAllForwardings=no` keeps the command-line `-L` effective.
-    /// Only a stale socket in the app-owned directory is unlinked, and the socket
-    /// mode is restricted to the owner.
+    // ClearAllForwardings=no keeps the command-line `-L` alive against a config
+    // that clears forwardings. The unlink only ever hits a stale socket in the
+    // app-owned directory, and the bind mask keeps the listener owner-only.
     private static let tunnelOptions = [
         "-N",
         "-T",
@@ -429,16 +376,10 @@ enum SSHCommandBuilder {
         "\(localSocketPath):\(remoteSocketPath)"
     }
 
-    /// Read-only search across known managed installs, including canonical mise
-    /// and direct-download paths. Every path built from the `command -v` result
-    /// or from HOME/USER is executed as `"$candidate"`, so remote values are never
-    /// reinterpreted as shell source. mise shims are excluded because a
-    /// non-interactive shell may fail to resolve the tool version; the actual
-    /// install is searched instead. Candidates are tried twice: first only a CLI
-    /// on Shepherd's protocol, then any herdr that answers, so a protocol bump
-    /// degrades to optimistic monitoring instead of losing the endpoint. Store
-    /// judges the server protocol after the tunnel is ready; this script performs
-    /// no install or update.
+    // Every candidate stays quoted as "$candidate" so a remote value is executed,
+    // never reinterpreted as shell source. mise shims are skipped because a
+    // non-interactive shell often cannot resolve the tool version; the install
+    // directories are searched instead.
     private static let remoteHerdrStatusScript = """
     set -u
     session=$1
@@ -520,9 +461,8 @@ enum SSHCommandBuilder {
     exit 127
     """
 
-    /// In OpenSSH's stream-local `local:remote` grammar the colon is the separator.
-    /// Non-absolute paths and control characters are rejected so no ambiguous
-    /// forwarding specification ever reaches the argv.
+    // The colon separates the two sides of OpenSSH's stream-local `-L` argument,
+    // so a path containing one would split into a different forwarding.
     private static func isValidForwardSocketPath(_ path: String) -> Bool {
         guard path.hasPrefix("/"), !path.contains(":") else { return false }
         return path.unicodeScalars.allSatisfy { scalar in
@@ -538,10 +478,10 @@ enum PrivateTunnelSocketWorkspaceError: Error, Equatable {
     case socketPathTooLong
 }
 
-/// Runtime directory and local listener path dedicated to one manager instance.
-/// The directory is mkdtemp mode 0700, so other users cannot reach the listener
-/// regardless of OpenSSH's StreamLocalBindMask setting. The random path also avoids
-/// collisions with another Shepherd process.
+// The Herdr socket API grants full control of the remote server, so the local end
+// is a Unix socket inside a mode 0700 mkdtemp directory: unreachable by other
+// users whatever StreamLocalBindMask does, and free of collisions with a second
+// Shepherd process.
 private struct PrivateTunnelSocketWorkspace {
     let directoryPath: String
     let socketPath: String
@@ -551,7 +491,7 @@ private struct PrivateTunnelSocketWorkspace {
         if let workspace = try create(under: preferredBase, rejectLongPath: true) {
             return workspace
         }
-        // Only in environments where TMPDIR is too long, fall back to a private random directory under the shorter /tmp.
+        // sun_path is short enough that a long TMPDIR alone can overflow it.
         if let workspace = try create(under: "/tmp", rejectLongPath: false) {
             return workspace
         }
@@ -591,9 +531,9 @@ enum RemoteTunnelFileSystemError: Error, Equatable {
     case unlinkFailed(String, Int32)
 }
 
-/// Test boundary that separates Unix socket file existence checks and removal from
-/// the supervision loop. The live implementation never unlinks a symlink or regular
-/// file, and stops the SSH launch when the app-owned directory assumption is broken.
+// Unlinking is limited to sockets. Anything else at that path means the app-owned
+// directory assumption is broken, and deleting a stranger's file is worse than
+// refusing to launch.
 struct RemoteTunnelFileSystem: Sendable {
     var prepareSocket: @Sendable (String) throws -> Void
     var socketExists: @Sendable (String) -> Bool
@@ -629,9 +569,8 @@ struct RemoteTunnelFileSystem: Sendable {
 
 // MARK: - Status discovery and ping
 
-/// Reads only the fields the tunnel needs from Herdr's `status server --json`.
-/// Discovery only locates the socket. Store compares the snapshot protocol through
-/// the forwarded socket after the tunnel is ready.
+// Discovery only has to locate the socket; Store compares the protocol later,
+// through the forwarded socket.
 private struct RemoteHerdrServerStatus: Decodable {
     let running: Bool
     let socket: String?
@@ -643,9 +582,8 @@ enum RemoteHerdrStatusParserError: Error, Equatable {
 }
 
 enum RemoteHerdrStatusParser {
-    /// Tolerates hosts whose non-interactive shell banner leaks into stdout by taking
-    /// the first decodable line from the end as the status. The Herdr CLI's contract
-    /// is single-line JSON output, so multi-line JSON is not handled.
+    // Some hosts leak a shell banner into stdout, so the status is the last
+    // decodable line. The Herdr CLI always prints its JSON on one line.
     static func parse(_ data: Data) throws -> (running: Bool, socket: String?, session: String?) {
         let decoder = JSONDecoder()
         for line in data.split(separator: 0x0A, omittingEmptySubsequences: true).reversed() {
@@ -657,7 +595,8 @@ enum RemoteHerdrStatusParser {
     }
 }
 
-/// Dependency that verifies the forwarded socket reaches the Herdr API, not merely that the listener was created.
+// SSH creates the local listener before the remote end is proven usable, so
+// readiness needs a real request through it.
 struct RemoteTunnelProbe: Sendable {
     var ping: @Sendable (String) async throws -> Void
 
@@ -707,17 +646,13 @@ private struct TunnelProbeResponse: Decodable {
     let error: RPCError?
 }
 
-/// One-shot ping with a 2-second read/write timeout and a 64 KiB cap.
-/// The result's protocol value is not compared, because the tunnel itself is up
-/// even on a protocol mismatch.
 private func pingHerdrSocket(path: String) throws {
     let fileDescriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
     guard fileDescriptor >= 0 else { throw RemoteTunnelProbeError.socket(errno) }
     defer { Darwin.close(fileDescriptor) }
 
-    // Even if the probe races with SSH tunnel shutdown and the peer closes first,
-    // the write's EPIPE is returned to the supervisor as an error for this
-    // connection attempt instead of becoming a process-wide SIGPIPE.
+    // The probe can race tunnel shutdown; without this the write would raise a
+    // process-wide SIGPIPE instead of an EPIPE this attempt can report.
     var noSigPipe: Int32 = 1
     let noSigPipeResult = withUnsafePointer(to: &noSigPipe) { pointer in
         setsockopt(
@@ -809,6 +744,8 @@ private func pingHerdrSocket(path: String) throws {
         TunnelProbeResponse.self,
         from: response[..<newline]
     )
+    // The protocol number in the result is ignored: a mismatch still proves the
+    // tunnel carries Herdr traffic, and Store decides what to do about it.
     guard envelope.error == nil, envelope.result != nil else {
         throw RemoteTunnelProbeError.invalidResponse
     }
@@ -847,7 +784,6 @@ enum RemoteTunnelCommandRunnerError: Error, Equatable {
     case timeout
 }
 
-/// Command runner that launches Foundation.Process directly, with no shell expansion in between.
 struct FoundationRemoteTunnelCommandRunner: RemoteTunnelCommandRunning {
     func run(
         _ command: RemoteProcessCommand,
@@ -893,10 +829,8 @@ struct FoundationRemoteTunnelCommandRunner: RemoteTunnelCommandRunning {
     }
 }
 
-/// Keeps reading the Pipe so the process makes progress regardless of how much the
-/// child writes, while retaining only the trailing 32 KiB. The `Pipe`'s parent-side
-/// write handle is closed right after launch, so the reader reaches EOF when the
-/// child exits.
+// The pipe must be drained continuously or a chatty child blocks forever on a
+// full buffer, yet only the tail is worth keeping for diagnostics.
 private final class BoundedPipeCapture: @unchecked Sendable {
     let pipe = Pipe()
 
@@ -925,6 +859,7 @@ private final class BoundedPipeCapture: @unchecked Sendable {
         }
     }
 
+    // The reader only sees EOF once the parent drops its own write end.
     func closeParentWriteHandle() {
         try? pipe.fileHandleForWriting.close()
     }
@@ -952,7 +887,6 @@ private final class BoundedPipeCapture: @unchecked Sendable {
     }
 }
 
-/// Lock-backed latch that delivers the process's exit to multiple waiters exactly once.
 private final class RemoteProcessResultLatch: @unchecked Sendable {
     private let lock = NSLock()
     private var result: RemoteProcessResult?
@@ -988,10 +922,6 @@ private final class RemoteProcessResultLatch: @unchecked Sendable {
     }
 }
 
-/// Bridges Process.terminationHandler to an async wait; on cancel it sends SIGTERM,
-/// then SIGKILL only if the same child is still alive one second later. Both
-/// Process.isRunning and the original processIdentifier are checked, so a recycled
-/// PID of an already-exited process is never killed by mistake.
 private final class FoundationRemoteTunnelProcess: RemoteTunnelRunningProcess, @unchecked Sendable {
     private let process = Process()
     private let outputCapture: BoundedPipeCapture?
@@ -1005,8 +935,8 @@ private final class FoundationRemoteTunnelProcess: RemoteTunnelRunningProcess, @
         let inputPipe: Pipe?
         if command.standardInput != nil {
             let pipe = Pipe()
-            // Even if the remote command exits before reading stdin, the EPIPE is
-            // treated as a discovery process failure rather than an app-wide SIGPIPE.
+            // The remote command may exit before it reads stdin; without this the
+            // write below would raise an app-wide SIGPIPE instead of EPIPE.
             _ = fcntl(pipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
             inputPipe = pipe
             process.standardInput = pipe
@@ -1025,6 +955,8 @@ private final class FoundationRemoteTunnelProcess: RemoteTunnelRunningProcess, @
         }
         process.standardError = errorCapture.pipe
 
+        // ssh needs the inherited PATH and SSH_AUTH_SOCK, so the overrides are
+        // merged over the parent environment rather than replacing it.
         var environment = ProcessInfo.processInfo.environment
         environment.merge(command.environmentOverrides) { _, override in override }
         process.environment = environment
@@ -1045,10 +977,9 @@ private final class FoundationRemoteTunnelProcess: RemoteTunnelRunningProcess, @
             throw error
         }
         if let input = command.standardInput, let inputPipe {
-            // The discovery script is bounded to a fixed size that never exceeds the
-            // pipe capacity, and the parent-side read end is closed after launch
-            // before writing. Closing the write end delivers EOF to the remote
-            // `/bin/sh -s`.
+            // A blocking write is safe only because the script is a fixed literal
+            // smaller than the pipe buffer. Closing the write end is what gives the
+            // remote `/bin/sh -s` its EOF.
             try? inputPipe.fileHandleForReading.close()
             try? inputPipe.fileHandleForWriting.write(contentsOf: input)
             try? inputPipe.fileHandleForWriting.close()
@@ -1084,6 +1015,8 @@ private final class FoundationRemoteTunnelProcess: RemoteTunnelRunningProcess, @
         }
     }
 
+    // The PID may already belong to an unrelated process by now, so the identity
+    // is confirmed against Process itself before the signal.
     private func forceTerminateIfStillRunning(processIdentifier: Int32) {
         lock.lock()
         let shouldKill = process.isRunning && process.processIdentifier == processIdentifier
@@ -1111,7 +1044,6 @@ private final class FoundationRemoteTunnelProcess: RemoteTunnelRunningProcess, @
 
 // MARK: - Supervision loop
 
-/// Schedule that lets tests shorten wall-clock time by swapping sleep and timeouts.
 struct RemoteTunnelSchedule: Sendable {
     var discoveryTimeout: Duration
     var readinessTimeout: Duration
@@ -1133,11 +1065,6 @@ struct RemoteTunnelSchedule: Sendable {
     )
 }
 
-/// Sendable value that supervises the Shepherd-owned SSH process without holding a
-/// reference to the MainActor manager. The persistent cache is read at the start of
-/// run and written on successful discovery. Only a failure before ready deletes the
-/// entry; a line drop after ready, monitoring turned OFF, or app exit leaves it for
-/// the next connection.
 private struct RemoteTunnelEngine: Sendable {
     let configuration: RemoteSourceConfiguration
     let localSocketPath: String
@@ -1160,14 +1087,13 @@ private struct RemoteTunnelEngine: Sendable {
                     cachedRemoteSocketPath: &cachedRemoteSocketPath,
                     emit: emit
                 )
-                // An SSH process run with `-N` does not return until it is stopped or fails.
+                // `ssh -N` returns only when it is stopped, and that path throws.
                 return
             } catch is CancellationError {
                 break
             } catch let readyExit as ReadyTunnelExit {
-                // A connection that got as far as a successful ping has cleared any
-                // prior failure streak. Restart from 1 second so a disconnect of a
-                // long-lived tunnel is not dragged back to the earlier max backoff.
+                // A successful ping proves the endpoint works, so a later line drop
+                // must not inherit the backoff an old failure streak had reached.
                 attempt = 1
                 let delay = schedule.retryDelay(attempt)
                 await emit(.retrying(failure: readyExit.failure, delay: delay))
@@ -1285,9 +1211,8 @@ private struct RemoteTunnelEngine: Sendable {
                         failure: processFailure(result, phase: .forwarding)
                     )
                 } catch {
-                    // On cancellation, onCancel has already terminated the child.
-                    // Terminating again here would send multiple signals to the same
-                    // child in the short window before the process exits.
+                    // onCancel already signalled the child; signalling again before
+                    // it exits would hit the same process twice.
                     if !Task.isCancelled, child.isRunning {
                         child.terminate()
                     }
@@ -1300,6 +1225,8 @@ private struct RemoteTunnelEngine: Sendable {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
+            // A path that once reached ready is still good; only a failure before
+            // ready suggests the cached path is stale.
             if !becameReady {
                 cachedRemoteSocketPath = nil
                 remoteSocketPathCache.store(nil, configuration)
@@ -1367,7 +1294,8 @@ private struct RemoteTunnelEngine: Sendable {
             )
         }
 
-        // `--session default` denotes Herdr's default namespace, so the status's session is null.
+        // Herdr reports its default namespace as a null session, so the literal
+        // name "default" can never match the returned value.
         if let requestedSession = configuration.normalizedSessionName,
            requestedSession != "default",
            status.session != requestedSession {
@@ -1430,7 +1358,6 @@ private struct RemoteTunnelEngine: Sendable {
     }
 }
 
-/// Marker telling the outer loop that the SSH process exited after a successful ping, resetting the backoff to the first step.
 private struct ReadyTunnelExit: Error {
     let failure: RemoteTunnelFailure
 }
@@ -1492,7 +1419,8 @@ private func diagnostic(
     return boundedDiagnostic(fallback)
 }
 
-/// Keeps the trailing 4 KiB of UTF-8 while withholding ANSI escapes and terminal control characters returned by SSH from the UI/log.
+// SSH stderr can carry ANSI escapes and terminal control characters that would
+// act on whatever renders the message, so only the readable tail survives.
 private func boundedDiagnostic(_ value: String) -> String {
     var reversedTail: [Unicode.Scalar] = []
     var byteCount = 0

@@ -1,39 +1,15 @@
-// The pop-out window. Detaches the same list as the menu bar panel (SourceList)
-// into a regular window so the whole herd can stay visible while working.
-// Lists parent agents per connection, and within that per workspace. Local main
-// rows jump to the corresponding Herdr pane, while remote main rows are static.
-//
-// Each view instance registers a UUID presence lease on appear and releases it
-// on disappear. FleetStore derives window visibility from the lease set, so an
-// outgoing view cannot drop a replacement view's state. Notification
-// navigation is received through the
-// app-owned MonitorWindowNavigation. A request opens this singleton scene at
-// the app boundary; once the view appears, it reads the current SourcePaneID,
-// scrolls the matching row into view, and emphasizes it for about two seconds.
-//
-// This file owns the window's appearance: on top of the standard opaque window
-// background, SourceList (window style) floats a rounded-corner card per
-// section. The title bar stays standard, leaving traffic-light alignment,
-// window dragging, and the titlebar separator on scroll to AppKit. Only the
-// title string is removed with removing: .title, to avoid the large leading
-// inset the standard window title carries (macOS 26), and placed as our own
-// Text in the navigation slot right after the traffic lights (the
-// Window("Shepherd") title still appears in window overviews such as Mission
-// Control). The top right adds chips with per-status agent counts.
+// The pop-out window: the same SourceList as the menu bar panel, detached into
+// a regular window. The title bar stays standard so AppKit keeps traffic-light
+// alignment, window dragging, and the titlebar separator on scroll.
 
 import Foundation
 import Observation
 import SwiftUI
 
-/// Main-actor handoff between app-level triggers (notification action routing,
-/// the global hotkey) and the singleton Monitor scene. `openRevision` changes
-/// for every request, including repeated clicks on the same agent and
-/// open-only fallbacks, so an always-mounted view with OpenWindowAction can
-/// react without owning notification semantics; `closeRevision` is the same
-/// mechanism for dismissal.
-/// The latest reveal target remains readable for a short handoff lease. A closing
-/// window can receive the revision just before disappearing; retaining the target
-/// lets the replacement scene read it on appear instead of losing the click.
+// Handoff between app-level triggers (notification routing, global hotkey) and
+// the singleton Monitor scene. Revisions, not stored requests, are the signal,
+// so an always-mounted view holding OpenWindowAction can react to repeated
+// clicks on the same agent without owning notification semantics.
 @Observable @MainActor
 final class MonitorWindowNavigation {
     struct RevealRequest: Equatable {
@@ -42,9 +18,8 @@ final class MonitorWindowNavigation {
     }
 
     private(set) var openRevision: UInt64 = 0
-    /// Advances for every dismiss request (global hotkey toggle). Open and
-    /// close use separate revisions so an open arriving while a close is
-    /// unconsumed cannot be lost, and vice versa.
+    // Separate from openRevision so an open arriving while a close is still
+    // unconsumed cannot be lost, and the reverse.
     private(set) var closeRevision: UInt64 = 0
     private var revealRequest: RevealRequest?
     @ObservationIgnored private let revealHandoffDuration: Duration
@@ -54,9 +29,8 @@ final class MonitorWindowNavigation {
         self.revealHandoffDuration = revealHandoffDuration
     }
 
-    /// Requests that the Monitor window come forward and optionally reveal a
-    /// currently resolved row. Callers must resolve notification-time identity
-    /// to the pane ID in the latest ready snapshot before passing it here.
+    // Callers must map notification-time identity onto the pane ID of the
+    // latest ready snapshot first; a stale ID reveals nothing.
     func open(revealing paneID: SourcePaneID? = nil) {
         openRevision &+= 1
         revealExpiryTask?.cancel()
@@ -81,17 +55,16 @@ final class MonitorWindowNavigation {
         }
     }
 
-    /// Requests that the singleton Monitor scene be dismissed. Consumed by the
-    /// receiver mounted at the menu bar label, which owns DismissWindowAction.
-    /// Dismissing an already-closed window is a no-op there, so callers only
-    /// need best-effort knowledge of visibility.
+    // Consumed by the receiver at the menu bar label, which owns
+    // DismissWindowAction. Dismissing an already-closed window is a no-op, so
+    // callers need only best-effort knowledge of visibility.
     func requestClose() {
         closeRevision &+= 1
     }
 
-    /// Returns the latest row while its handoff lease is active. Reading does not
-    /// consume it because an outgoing and incoming Monitor view can overlap while
-    /// the singleton window is being brought back after a notification click.
+    // Reading does not consume the request: an outgoing and an incoming Monitor
+    // view overlap while the singleton window comes back after a notification
+    // click, and both must be able to read it.
     func currentRevealRequest() -> RevealRequest? {
         revealRequest
     }
@@ -103,6 +76,9 @@ struct MonitorView: View {
 
     @State private var highlightedPaneID: SourcePaneID?
     @State private var revealTask: Task<Void, Never>?
+    // Per-instance lease: FleetStore derives window visibility from the set of
+    // live IDs, so an outgoing view's disappear cannot clear the state of the
+    // replacement view that already appeared.
     @State private var presenceID = UUID()
 
     @MainActor
@@ -127,18 +103,21 @@ struct MonitorView: View {
                     }
                 }
             }
-            // A request can precede scene presentation, so read the active handoff
-            // both when the singleton appears and while its window stays visible.
+            // A request can arrive before the scene is presented, so the handoff
+            // is read both on appear and on every later revision.
             .onAppear { revealPendingPane(using: proxy) }
             .onChange(of: navigation.openRevision) {
                 revealPendingPane(using: proxy)
             }
         }
+        // macOS 26 gives the standard window title a large leading inset, so the
+        // string is dropped and redrawn as our own Text next to the traffic
+        // lights. Window("Shepherd") still names the window in Mission Control.
         .toolbar(removing: .title)
         .toolbar {
-            // The macOS 26 toolbar puts items on a Liquid Glass pedestal, but a
-            // control-like look is wrong for the title and the non-clickable,
-            // display-only chips, so both hide it via sharedBackgroundVisibility.
+            // The macOS 26 toolbar puts items on a Liquid Glass pedestal, which
+            // reads as a control. The title and the chips are display-only, so
+            // both hide it.
             if #available(macOS 26.0, *) {
                 ToolbarItem(placement: .navigation) {
                     titleLabel
@@ -169,9 +148,6 @@ struct MonitorView: View {
         }
     }
 
-    /// Reveals only a row resolved from the current snapshot. The first yield lets
-    /// SourceList lay out a newly opened window before ScrollViewProxy searches for
-    /// the ID. A newer request cancels both the stale scroll and its clear timer.
     private func revealPendingPane(using proxy: ScrollViewProxy) {
         revealTask?.cancel()
         guard let request = navigation.currentRevealRequest() else {
@@ -183,6 +159,8 @@ struct MonitorView: View {
         let paneID = request.paneID
         highlightedPaneID = paneID
         revealTask = Task { @MainActor in
+            // Let SourceList lay out a newly opened window first; ScrollViewProxy
+            // cannot find the ID before its row exists.
             await Task.yield()
             guard !Task.isCancelled else { return }
 
@@ -208,12 +186,8 @@ struct MonitorView: View {
             .font(.headline)
     }
 
-    /// Row of chips with per-status agent counts. States with a count of 0 are
-    /// omitted; when every state is 0 (no agents, or not connected) nothing is
-    /// drawn. Ordered by the same severity as the menu bar aggregation
-    /// (aggregateMenuBarState): blocked → done → working.
-    /// The trailing 6pt is added because with only the toolbar's default
-    /// trailing margin the chip capsules sit too close to the window edge.
+    // The extra trailing padding is needed because the toolbar's own trailing
+    // margin leaves the chip capsules too close to the window edge.
     private var statusSummary: some View {
         HStack(spacing: 6) {
             ForEach(statusCounts, id: \.status) { entry in
@@ -235,10 +209,10 @@ struct MonitorView: View {
         .padding(.trailing, 6)
     }
 
-    /// Tally over the same scope as the sections shown in the window
-    /// (sourceSections). Remotes with monitoring off are excluded from the
-    /// summary just as they are from the list.
-    /// idle / unknown are not counted, as they are not "active" states.
+    // Counted over sourceSections so the chips match the list exactly, which
+    // also drops remotes with monitoring off. idle and unknown are left out
+    // because they are not active states. The order matches the menu bar
+    // severity in aggregateMenuBarState.
     private var statusCounts: [(status: AgentStatus, count: Int)] {
         let statuses = store.sourceSections
             .flatMap(\.workspaceGroups)

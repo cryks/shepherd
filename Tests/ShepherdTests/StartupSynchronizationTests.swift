@@ -1,9 +1,3 @@
-// Verifies the Store's poll-only synchronization without depending on a real socket
-// or production intervals. The tests control session.snapshot completion, failure,
-// protocol mismatch, poll ticks, stop, and suspend/resume during sleep, covering the
-// contract that the first response is published exactly once and the boundary that a
-// slow RPC is never executed concurrently with another.
-
 import Foundation
 import XCTest
 @testable import Shepherd
@@ -221,7 +215,7 @@ final class StartupSynchronizationTests: XCTestCase {
         await fulfillment(of: [snapshots.started(0)], timeout: 1.0)
         store.suspendPolling()
 
-        // The result of an in-flight RPC cancelled by suspend is not reflected into state.
+        // Suspend cancelled this call, so its late result must not reach the state.
         snapshots.succeed(makeSnapshot(panes: [stale]), call: 0)
         await fulfillment(of: [snapshots.returned(0)], timeout: 1.0)
         await drainMainActor()
@@ -249,7 +243,7 @@ final class StartupSynchronizationTests: XCTestCase {
             snapshots.finish()
         }
 
-        // Path where a remote tunnel becomes ready while entering sleep: suspend first, start after.
+        // Real order when a remote tunnel becomes ready while the Mac enters sleep.
         store.suspendPolling()
         store.start()
         try? await Task.sleep(for: .milliseconds(20))
@@ -299,8 +293,6 @@ final class StartupSynchronizationTests: XCTestCase {
         )
     }
 
-    /// A fetch carrying only the typed snapshot: these tests observe polling and
-    /// publication, which never look at the raw records.
     private func makeSnapshot(
         panes: [Pane],
         protocolVersion: Int = Herdr.supportedProtocol
@@ -360,7 +352,6 @@ final class StartupSynchronizationTests: XCTestCase {
         return snapshot
     }
 
-    /// XCTestExpectation pins the RPC start points; this wait only observes state changes that have returned to the MainActor.
     @MainActor
     private func waitUntil(
         timeout: Duration = .seconds(1),
@@ -375,7 +366,8 @@ final class StartupSynchronizationTests: XCTestCase {
         return condition()
     }
 
-    /// Yields the executor to already-enqueued MainActor tasks so fixed-duration sleeps do not race against shutdown.
+    // Lets already-enqueued MainActor work run, so a following fixed sleep does not
+    // race the store shutting down.
     @MainActor
     private func drainMainActor() async {
         for _ in 0..<20 {
@@ -384,8 +376,6 @@ final class StartupSynchronizationTests: XCTestCase {
     }
 }
 
-/// One-shot gate that the test releases explicitly for a single async call.
-/// Retains a result even when it is set before the call arrives, and resumes any unreleased continuation when the test finishes.
 private final class Deferred<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private var result: Result<UncheckedTransfer<Value>, Error>?
@@ -422,12 +412,12 @@ private final class Deferred<Value>: @unchecked Sendable {
     }
 }
 
-/// Avoids making production types retroactively Sendable for test convenience; only the ownership transfer across the gate is unchecked.
+// Carries a non-Sendable value across the gate without marking production types
+// retroactively Sendable just for the tests.
 private struct UncheckedTransfer<Value>: @unchecked Sendable {
     let value: Value
 }
 
-/// Assigns each invocation of the same RPC its own gate and started/returned notifications.
 private final class ControlledCalls<Value>: @unchecked Sendable {
     private let lock = NSLock()
     private let gates: [Deferred<Value>]

@@ -1,34 +1,16 @@
-// How an agent row is drawn and what a notification says, as a persisted
-// value: an ordered list of lines (each a left and a right template with its
-// own style), per-agent replacements of that list, and the notification
-// templates.
-//
-// RowLayoutSetting is the sole writer of the "AgentRowLayout" default. It holds
-// the layout already parsed, so a row reading templates during body evaluation
-// never re-parses JSON, and being @Observable an edit in the settings pane
-// redraws every mounted row.
-//
-// Storage contract: the key stays absent until the user edits the layout, and
-// an absent or undecodable value reads as RowLayout.default, so hand-edited
-// defaults cannot break launch.
-
 import Foundation
 import Observation
 
-/// One line of a row: two templates side by side, each with its own style.
-/// A line whose left and right both render empty is dropped by the view layer.
 struct RowLine: Codable, Equatable, Sendable, Identifiable {
-    /// Identity for the settings editor's list and for SwiftUI diffing. It has
-    /// no meaning to rendering.
+    // Only for the settings editor's list and SwiftUI diffing; rendering
+    // ignores it.
     var id: UUID
     var left: RowTemplate
     var leftStyle: RowTextStyle
     var right: RowTemplate
     var rightStyle: RowTextStyle
-    /// How many lines the left side's text may wrap across before it
-    /// truncates. The right side always stays on the first line, so status
-    /// text cannot push the row taller. On the reserved {excerpt} line, menu
-    /// rows keep this many lines of height in every state.
+    // Wrap limit for the left side only. The right side stays on the first
+    // line so status text can never make the row taller.
     var maxLines: Int
 
     init(
@@ -47,10 +29,9 @@ struct RowLine: Codable, Equatable, Sendable, Identifiable {
         self.maxLines = maxLines
     }
 
-    /// `id` is generated when the stored JSON omits it, so a hand-written
-    /// layout only has to name the templates and their styles. `maxLines`
-    /// reads absent or sub-1 values as 1, so a layout stored before lines
-    /// had a count, and a hand-edited count of 0, both keep a single line.
+    // Tolerant of hand-written JSON: `id` is generated when absent, and
+    // `maxLines` clamps absent or sub-1 values so layouts stored before
+    // maxLines existed still render one line.
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
@@ -65,10 +46,9 @@ struct RowLine: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
-/// One line of a notification body.
 struct NotificationLine: Codable, Equatable, Sendable, Identifiable {
-    /// Identity for the settings editor's list and for SwiftUI diffing. It has
-    /// no meaning to rendering.
+    // Only for the settings editor's list and SwiftUI diffing; rendering
+    // ignores it.
     var id: UUID
     var template: RowTemplate
 
@@ -77,9 +57,8 @@ struct NotificationLine: Codable, Equatable, Sendable, Identifiable {
         self.template = template
     }
 
-    /// Reads a bare template string as well as the keyed form, and generates
-    /// `id` when it is absent, so a hand-written body can be a plain list of
-    /// templates.
+    // The bare-string form lets a hand-written body be a plain list of
+    // templates instead of a list of objects.
     init(from decoder: any Decoder) throws {
         if let source = try? decoder.singleValueContainer().decode(String.self) {
             id = UUID()
@@ -92,15 +71,10 @@ struct NotificationLine: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
-/// The fields of a notification, rendered text-only: `{agent_icon}` resolves
-/// empty. `{excerpt}` holds the pane's excerpt, which is read after the status
-/// transition, so AttentionNoticeStager is what renders these templates with a
-/// value for it.
-///
-/// macOS gives a banner one title and one subtitle, so those stay single
-/// templates. The body is a list: lines that render empty are dropped and the
-/// rest are joined with newlines, which is how a body says nothing about a
-/// branch when the pane has none.
+// Rendered text-only, so `{agent_icon}` resolves empty. `{excerpt}` is read
+// only after the status transition, which is why AttentionNoticeStager owns
+// rendering these. A macOS banner has one title and one subtitle, so only the
+// body is a list.
 struct NotificationTemplates: Codable, Equatable, Sendable {
     var title: RowTemplate
     var subtitle: RowTemplate
@@ -112,10 +86,9 @@ struct NotificationTemplates: Codable, Equatable, Sendable {
         self.body = body
     }
 
-    /// A single template under `body` is the form stored before the body became
-    /// a list. It reads as that line followed by an `{excerpt}` line, because a
-    /// body stored that way was delivered with the excerpt after it, and the
-    /// list is now the only thing that says where the excerpt goes.
+    // A single template under `body` predates the body becoming a list. Back
+    // then the excerpt was appended by the delivery path, so the migration has
+    // to add the `{excerpt}` line that now carries that placement.
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         title = try container.decode(RowTemplate.self, forKey: .title)
@@ -133,12 +106,11 @@ struct NotificationTemplates: Codable, Equatable, Sendable {
 
 struct RowLayout: Codable, Equatable, Sendable {
     var lines: [RowLine]
-    /// Keyed by herdr's agent id (claude, codex, ...). An entry REPLACES
-    /// `lines` entirely for that agent; nothing is merged.
+    // Keyed by herdr's agent id (claude, codex, ...). An entry replaces `lines`
+    // entirely for that agent; nothing is merged.
     var linesByAgent: [String: [RowLine]]
     var notification: NotificationTemplates
 
-    /// Reproduces the row and notification text the app shows before any edit.
     static let `default` = RowLayout(
         lines: [
             RowLine(
@@ -171,25 +143,21 @@ struct RowLayout: Codable, Equatable, Sendable {
         )
     )
 
-    /// Lines used for one pane: the per-agent override when present, else
-    /// `lines`. A pane with no detected agent always gets `lines`.
     func lines(forAgent agent: String?) -> [RowLine] {
         guard let agent, let override = linesByAgent[agent] else { return lines }
         return override
     }
 }
 
-/// The sole writer of the row layout preference. Being @Observable, rows and
-/// the settings preview that read `layout` during body evaluation are redrawn
-/// as the user edits.
+// The sole writer of the layout preference. It keeps the layout parsed so rows
+// never decode JSON during body evaluation, and @Observable makes an edit in
+// the settings pane redraw every mounted row.
 @Observable @MainActor
 final class RowLayoutSetting {
     static let shared = RowLayoutSetting()
 
-    /// UserDefaults key holding the layout as JSON Data.
     static let layoutKey = "AgentRowLayout"
 
-    /// Row and notification templates in effect. Persisted on every write.
     var layout: RowLayout {
         didSet {
             guard let data = try? JSONEncoder().encode(layout) else { return }
@@ -199,11 +167,9 @@ final class RowLayoutSetting {
 
     private let defaults: UserDefaults
 
-    /// - Parameter defaults: Storage destination. The app proper uses standard;
-    ///   tests pass a dedicated suite. A missing key reads as RowLayout.default
-    ///   and is not written back, so the app keeps following the built-in
-    ///   layout until the user edits it. Undecodable data reads as the default
-    ///   too, and stays stored until the next edit replaces it.
+    // Reading a missing or undecodable value as the default, without writing it
+    // back, keeps hand-edited defaults from breaking launch and leaves the app
+    // following the built-in layout until the user edits it.
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         layout = defaults.data(forKey: Self.layoutKey)
@@ -211,10 +177,9 @@ final class RowLayoutSetting {
             ?? .default
     }
 
-    /// Drops the stored value so the built-in defaults apply again.
-    /// The assignment goes through `layout` so observers redraw; removing the
-    /// key afterwards undoes the write it triggered, leaving storage in the
-    /// same never-edited state as on a fresh install.
+    // The assignment is what notifies observers; removing the key afterwards
+    // undoes the write it triggered, so storage returns to the never-edited
+    // state of a fresh install.
     func resetToDefault() {
         layout = .default
         defaults.removeObject(forKey: Self.layoutKey)

@@ -1,16 +1,5 @@
-// Draws the "night watch" app icon with CoreGraphics and outputs a .iconset
-// directory suitable for iconutil (the 10 images icon_16x16.png through icon_512x512@2x.png).
-// Usage: swift Support/GenerateAppIcon.swift <output .iconset directory>
-//
-// Composition: a night sky and a dark hill, with a fluffy white sheep and a
-// shepherd's crook on top. The stars in the sky use the same state colors as the
-// menu-bar StatusIcons (yellow = working, green = done, red = blocked), signaling
-// the app's role of watching over a flock of agents through the night.
-//
-// The design uses a logical 1024pt canvas with y pointing up; each output size is
-// drawn through a CGContext scale transform. Because this is not a raster downscale,
-// edges stay sharp even at 16px, and fine details like the crook and stars fade out
-// naturally as the size shrinks.
+// Every size is redrawn on a logical 1024pt canvas through a scale transform
+// rather than downscaled from one bitmap, so edges stay sharp down to 16px.
 import Foundation
 import CoreGraphics
 import ImageIO
@@ -65,32 +54,28 @@ func ellipse(_ ctx: CGContext, cx: CGFloat, cy: CGFloat, rx: CGFloat, ry: CGFloa
 }
 
 func drawIcon(_ ctx: CGContext) {
-    // Apple's icon grid: a 100pt margin on the 1024 canvas, with a corner radius
-    // of about 22.5% of the 824 side length (= 186). Outside the squircle stays transparent.
+    // Apple's icon grid: 100pt margin, corner radius 22.5% of the 824pt side.
     let iconRect = CGRect(x: 100, y: 100, width: 824, height: 824)
     let squircle = CGPath(roundedRect: iconRect, cornerWidth: 186, cornerHeight: 186, transform: nil)
     ctx.addPath(squircle)
     ctx.clip()
 
-    // Night sky
     linearGradient(ctx, in: squircle, from: skyTop, to: skyBottom, yTop: 924, yBottom: 240)
 
-    // Stars: the three StatusIcons state colors plus two achromatic ones
+    // The three colored stars quote the StatusIcons state colors: working, done, blocked.
     circle(ctx, 246, 812, 9, rgb(0xF0C64F))
     circle(ctx, 520, 862, 8, rgb(0x66C97A))
     circle(ctx, 858, 690, 8, rgb(0xE06A5A))
     circle(ctx, 402, 760, 5, rgb(0xFFFFFF, 0.75))
     circle(ctx, 680, 900, 5, rgb(0xFFFFFF, 0.6))
 
-    // Hill: a wide ellipse forms the gentle curve. The apex sits at the lower third of the canvas (y≈368)
+    // The hill is one ellipse far wider than the canvas, so only its flat apex shows.
     let hillPath = CGMutablePath()
     hillPath.addEllipse(in: CGRect(x: 512 - 760, y: 68 - 300, width: 1520, height: 600))
     linearGradient(ctx, in: hillPath, from: hillTop, to: hillBottom, yTop: 368, yBottom: 100)
 
-    // Ground shadow under the sheep
     ellipse(ctx, cx: 540, cy: 295, rx: 240, ry: 36, shadow)
 
-    // Crook: to the right of the sheep. The tip bends left in a half circle and droops slightly
     let crook = CGMutablePath()
     crook.move(to: CGPoint(x: 812, y: 330))
     crook.addLine(to: CGPoint(x: 812, y: 742))
@@ -103,8 +88,8 @@ func drawIcon(_ ctx: CGContext) {
     ctx.addPath(crook)
     ctx.strokePath()
 
-    // Legs: drawn before the body so the fluff hides where they attach.
-    // The body's bottom edge is at y≈325, so make them long enough to peek out about 35px below it
+    // Legs come before the body so the fluff covers where they attach; they run up
+    // past the body's lower edge (y≈325) and only the last ~35px show.
     ctx.setFillColor(face)
     for x: CGFloat in [480, 610] {
         let leg = CGPath(roundedRect: CGRect(x: x - 22, y: 290, width: 44, height: 120), cornerWidth: 22, cornerHeight: 22, transform: nil)
@@ -112,9 +97,6 @@ func drawIcon(_ ctx: CGContext) {
         ctx.fillPath()
     }
 
-    // Body: a cluster of circles forms the fluffy outline. For the upper-half circles,
-    // a shade color is laid down first, slightly offset downward, then white is drawn
-    // on top so shadow remains only in the valleys of the outline
     let bodyCX: CGFloat = 545
     let bodyCY: CGFloat = 495
     let fluff: [(CGFloat, CGFloat, CGFloat)] = [
@@ -122,6 +104,8 @@ func drawIcon(_ ctx: CGContext) {
         (160, 10, 92), (110, -60, 85), (0, -80, 90), (-110, -60, 85),
         (0, 0, 140),
     ]
+    // Shading the top circles first and offset down leaves shadow only in the valleys
+    // once the white pass covers the rest.
     for (dx, dy, r) in fluff where dy < 0 {
         circle(ctx, bodyCX + dx, bodyCY + dy - 12, r, woolShade)
     }
@@ -129,8 +113,7 @@ func drawIcon(_ ctx: CGContext) {
         circle(ctx, bodyCX + dx, bodyCY + dy, r, wool)
     }
 
-    // Head: on the left side (the sheep faces left). Drawn in order: ears, face, head fluff, eyes.
-    // The ears must be placed sticking out past the face outline (cx348 ± rx84) or they get hidden
+    // The ears must reach past the face outline (cx 348 ± rx 84), which is drawn over them.
     ellipse(ctx, cx: 242, cy: 585, rx: 58, ry: 30, rotation: 0.55, face)
     ellipse(ctx, cx: 458, cy: 590, rx: 56, ry: 30, rotation: -0.5, face)
     ellipse(ctx, cx: 348, cy: 548, rx: 84, ry: 102, face)
@@ -166,7 +149,7 @@ guard args.count == 2 else {
 let outDir = URL(fileURLWithPath: args[1], isDirectory: true)
 try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
 
-// The 10 standard sizes iconutil requires (point size x scale)
+// iconutil requires exactly these 10 sizes.
 let entries: [(point: Int, scale: Int)] = [
     (16, 1), (16, 2), (32, 1), (32, 2), (128, 1), (128, 2),
     (256, 1), (256, 2), (512, 1), (512, 2),

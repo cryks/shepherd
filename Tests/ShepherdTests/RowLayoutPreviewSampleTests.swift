@@ -1,10 +1,3 @@
-// Pins that the Display pane's fixed sample resolves what the built-in layout
-// names. The sample is a whole session.snapshot response line decoded the same
-// two ways the live path decodes it, and a mistake in either pass leaves the
-// preview blank while every other test still passes.
-//
-// Not exercised here: the preview view itself, and the sample's wording.
-
 import XCTest
 @testable import Shepherd
 
@@ -30,8 +23,8 @@ final class RowLayoutPreviewSampleTests: XCTestCase {
             .first(where: { $0.context.pane.agent == "codex" }) else {
             return XCTFail("the sample has no codex pane")
         }
-        // A synthetic snapshot has no worktree.list, so the sample carries the
-        // branch under the key AgentSnapshot injects it into on the live path.
+        // The sample is synthetic and has no worktree.list, so it must already carry
+        // the branch under the key AgentSnapshot injects on the live path.
         XCTAssertEqual(
             codex.context.templateValue(for: "herdr.workspace.branch"),
             .text("feature/row-templates")

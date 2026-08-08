@@ -1,14 +1,3 @@
-// Verifies the display rule that merges panes of linked worktrees into the root
-// checkout's group, and the propagation of branch names fetched from
-// worktree.list into the workspace records that `{herdr.workspace.branch}`
-// reads. RPCs respond immediately via swapped-in closures and do not depend on a
-// real socket or the poll interval.
-//
-// At the Store level the branch is observed indirectly, through which workspaces
-// worktree.list is asked about: a workspace whose branch was recorded is not
-// queried again. The record the branch is written into is asserted directly on
-// AgentSnapshot, which owns that write.
-
 import Foundation
 import XCTest
 @testable import Shepherd
@@ -35,8 +24,8 @@ final class WorktreeTests: XCTestCase {
         XCTAssertEqual(groups.count, 1)
         XCTAssertEqual(groups.first?.workspace.workspaceId, "w1")
         XCTAssertEqual(groups.first?.workspace.label, "shepherd")
-        // Workspace number takes precedence over pane ID, so the root pane
-        // comes first even though p2 sorts after p1.
+        // Workspace number outranks pane ID, so p2 leads even though it sorts
+        // after p1.
         XCTAssertEqual(groups.first?.panes.map(\.paneId), ["w1:p2", "w2:p1"])
     }
 
@@ -152,9 +141,8 @@ final class WorktreeTests: XCTestCase {
 
         XCTAssertEqual(snapshot.raw.workspaces["w1"]?["branch"]?.templateText, "main")
         XCTAssertEqual(snapshot.raw.workspaces["w2"]?["branch"]?.templateText, "feature/x")
-        // Non-git workspaces, detached HEAD, and failed fetches contribute no
-        // entry, and the key stays absent rather than becoming an empty string,
-        // so `[ {herdr.workspace.branch}]` drops its separator too.
+        // An absent key, not an empty string: `[ {herdr.workspace.branch}]`
+        // keeps its separator for any value that resolves.
         XCTAssertNil(snapshot.raw.workspaces["w3"]?["branch"])
     }
 
@@ -190,16 +178,15 @@ final class WorktreeTests: XCTestCase {
         let ready = await becameReady(store)
         XCTAssertTrue(ready)
 
-        // The response for w1 also resolves w2 in the same repo, so a single
-        // query suffices. w2 being skipped is what proves its branch was taken
-        // from w1's response.
+        // w1's response also carries w2's branch. w2 never being queried is
+        // the only visible proof that the branch was taken from it.
         XCTAssertEqual(recorder.workspaceIDs, ["w1"])
     }
 
     @MainActor
     func testWorktreeMetadataの無いGitWorkspaceにも問い合わせる() async {
-        // session.snapshot may omit worktree metadata even for a git repo workspace.
-        // Confirms that queries are not filtered by the presence of metadata.
+        // session.snapshot may omit worktree metadata even for a git repo, so
+        // its presence cannot filter the query.
         let recorder = CallRecorder()
         let serverSnapshot = makeSnapshot(
             agents: [makePane(id: "w4:p1", workspaceId: "w4")],
@@ -289,8 +276,6 @@ final class WorktreeTests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// A fetch carrying only the typed snapshot. The branch write is asserted on
-    /// AgentSnapshot directly, so the store-level tests need no raw records.
     private func makeSnapshot(
         agents: [Pane],
         workspaces: [Workspace]
@@ -305,8 +290,8 @@ final class WorktreeTests: XCTestCase {
         )
     }
 
-    /// herdr records carrying identity only. The branch write is the subject
-    /// under test, so no record starts out with one.
+    // Identity keys only: the branch write is the subject under test, so no
+    // record may start out with one.
     private func rawSnapshot(
         paneIDs: [String],
         workspaceIDs: [String]
@@ -367,7 +352,8 @@ private enum StubError: Error {
     case worktreeList
 }
 
-/// Records the workspaces targeted by worktree.list calls from a @Sendable closure.
+// worktree.list closures are @Sendable and may run off the main actor, hence
+// the lock.
 private final class CallRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var recorded: [String] = []

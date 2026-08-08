@@ -1,8 +1,3 @@
-// Verifies the notification-to-terminal activation boundary without asking
-// AppKit or UserNotifications to change the foreground application. Injected
-// state drives the process-wide activation coordinator, while an explicit gate
-// proves that the async notification action does not return early.
-
 import XCTest
 @testable import Shepherd
 

@@ -1,28 +1,11 @@
-// Pins the two halves of the variable namespace that a wrong answer would hide
-// rather than break.
-//
-// `{title}` is herdr's terminal_title_stripped with Codex's "Action Required"
-// prefix removed. While Codex waits for input it retitles its terminal to
-// "[ ! ] Action Required | <task>" and blinks the bracketed glyph between "!"
-// and ".", so both frames have to strip; a title that merely quotes the phrase
-// does not; and a title that is empty once the prefix is gone stays empty,
-// because the agent-name fallback belongs to the template
-// (`{title|herdr.agent.agent}`), not to the variable.
-//
-// `herdr.*` names address the raw records under the keys herdr sent. The typed
-// models decode with .convertFromSnakeCase, so a camelCased path is exactly
-// what a regression would produce — and it would produce it silently, since an
-// unresolved name renders as nothing.
-//
-// Not exercised here: `{cwd_short}` / `{cwd_name}` / `{source}`, and the
-// grammar that turns a resolved value into text (RowTemplateGrammarTests).
-
 import XCTest
 @testable import Shepherd
 
 final class AgentRowContextTests: XCTestCase {
     // MARK: - {title}
 
+    // While Codex waits for input it retitles its terminal to
+    // "[ ! ] Action Required | <task>" and blinks the glyph between "!" and ".".
     @MainActor
     func testBothBlinkFramesOfTheCodexPrefixAreStripped() {
         XCTAssertEqual(
@@ -47,6 +30,8 @@ final class AgentRowContextTests: XCTestCase {
         )
     }
 
+    // The agent-name fallback lives in the template
+    // (`{title|herdr.agent.agent}`), not in the variable.
     @MainActor
     func testTitlesThatEndUpEmptyRenderEmpty() {
         XCTAssertEqual(renderedTitle("[ ! ] Action Required | "), "")
@@ -65,6 +50,8 @@ final class AgentRowContextTests: XCTestCase {
         XCTAssertEqual(render("{herdr.workspace.worktree.repo_name}", context), "shepherd")
     }
 
+    // The typed models decode with .convertFromSnakeCase, so a camelCased path
+    // is what a regression writes, and an unresolved name renders as nothing.
     @MainActor
     func testCamelCasedPathsResolveToNothing() {
         let context = snakeCaseRecords
@@ -72,15 +59,13 @@ final class AgentRowContextTests: XCTestCase {
         XCTAssertEqual(render("{herdr.agent.stateLabels.blocked}", context), "")
         XCTAssertEqual(render("{herdr.agent.tokens.jjStatus}", context), "")
         XCTAssertEqual(render("{herdr.workspace.worktree.repoName}", context), "")
-        // The name resolving to nothing also takes its group with it, so a
-        // camelCased path leaves no separator behind to notice it by.
+        // The unresolved name takes its whole group with it, so not even a
+        // stray separator hints at the mistake.
         XCTAssertEqual(render("[ · {herdr.agent.stateLabels.blocked}]", context), "")
     }
 
     // MARK: - Helpers
 
-    /// Records holding nested keys of both shapes herdr uses: a hook-defined
-    /// token and a state label, plus a workspace's worktree metadata.
     private var snakeCaseRecords: AgentRowContext {
         AgentRowContext(
             pane: pane(title: "Task"),

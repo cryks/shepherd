@@ -1,25 +1,6 @@
-// Multi-endpoint list shared by the menu panel and the pop-out window. While at
-// least one remote is visible, headers separate the endpoints, and a remote
-// keeps its header even with monitoring OFF. The local header is omitted when
-// the local endpoint is the only one, or when LocalSectionTitleSetting is set
-// to hidden, in which case the agent rows are laid out directly.
-// onFocus is passed only for local, so a remote row's main content is static.
-//
-// The same section column is rendered two ways via Style:
-// - menu: NSMenu-style, laying rows directly on the panel surface. Headers use
-//   headline, and remote headers carry a monitoring ON/OFF checkbox (when OFF,
-//   the checkbox conveys the state, so no body is drawn). Rows here reserve the
-//   height of the line that reads {excerpt}, keeping the panel from resizing
-//   when one arrives.
-// - window: settings-app style, floating each section body above the window
-//   background as a rounded card. No checkbox; monitoring OFF is shown as a
-//   single line inside the card. This presentation forwards cross-source
-//   excerpt lookup and notification reveal to AgentGroupList.
-
 import SwiftUI
 
 struct SourceList: View {
-    /// Presentation per hosting surface. Row hover rendering (AgentRow.HoverStyle) follows the surface too.
     enum Style {
         case menu
         case window
@@ -34,15 +15,12 @@ struct SourceList: View {
 
     let sections: [FleetSourceSection]
     let style: Style
-    /// FleetStore.showsSourceLabels: true while at least one remote is visible.
-    /// A local-only list drops every header, since a header then distinguishes
-    /// nothing; with remotes present each section's headerTitle is honored (only
-    /// the local hidden setting returns nil). The same flag suppresses {source}
-    /// in templates, so a row and its notification never disagree.
+    // The same flag also suppresses {source} in notification templates, so a
+    // row and its notification never disagree about showing the endpoint name.
     let showsSourceLabels: Bool
     let highlightedPaneID: SourcePaneID?
-    /// Template values for one row. nil for a pane that left its endpoint's
-    /// snapshot between this list being built and the row being drawn.
+    // nil for a pane that left its endpoint's snapshot between this list being
+    // built and the row being drawn.
     let rowContext: (SourcePaneID) -> AgentRowContext?
     let excerptState: ((SourcePaneID) -> AgentExcerptState?)?
     let onRemoteEnabledChange: ((HerdrSourceID, Bool) -> Void)?
@@ -78,12 +56,10 @@ struct SourceList: View {
     // MARK: - menu
 
     private var menuLayout: some View {
-        // MenuPanel derives the window height from the content's actual size, so
-        // use a VStack that can measure every source rather than a lazy stack.
-        // The number of visible items is bounded by Herdr's parent agent count.
-        // spacing 16 combines with the trailing row's 3pt bottom to make 19pt —
-        // one step wider than the workspace header separation (11pt), so an
-        // endpoint boundary reads stronger than a workspace boundary.
+        // MenuPanel sizes its window from the content's measured height, so a
+        // lazy stack cannot be used. Item count is bounded by Herdr's parent
+        // agent count. spacing 16 plus the trailing row's 3pt bottom gives 19pt,
+        // one step wider than the 11pt between workspaces.
         let showsFirstHeader = showsSourceLabels && sections.first?.headerTitle != nil
         return VStack(alignment: .leading, spacing: 16) {
             ForEach(sections) { section in
@@ -97,14 +73,10 @@ struct SourceList: View {
                 )
             }
         }
-        // Normalize the effective top margin to 12pt: when the first section
-        // (always local) shows a header, the header itself carries no top margin,
-        // so 12pt is used as-is; without a header the first element is a workspace
-        // header (which carries 6pt top), so 6pt is added for a total of 12pt.
-        // This 12pt is also the value that lets the leading text clear the curve
-        // of the menu panel's outer corner radius (about 12pt). The 8pt bottom
-        // combines with the trailing row's 3pt bottom for an effective 11pt
-        // margin, roughly symmetric with the 12pt top.
+        // Both branches produce a 12pt effective top margin, which clears the
+        // menu panel's outer corner curve: a header carries no top padding of
+        // its own, while the workspace header below it already carries 6pt.
+        // The 8pt bottom plus the trailing row's 3pt gives 11pt, near-symmetric.
         .padding(.top, showsFirstHeader ? 12 : 6)
         .padding(.bottom, 8)
     }
@@ -131,8 +103,6 @@ struct SourceList: View {
 
 // MARK: - Protocol warning
 
-/// Warning triangle next to an endpoint name while it is monitored on an
-/// untested herdr protocol. The tooltip carries the version.
 private struct ProtocolWarningBadge: View {
     let version: Int
 
@@ -145,8 +115,7 @@ private struct ProtocolWarningBadge: View {
     }
 }
 
-/// The same warning as its own line, for a section whose layout has no header
-/// to host the badge (local-only, or the hidden local title).
+// Fallback for a section with no header to host the badge.
 private struct ProtocolWarningLine: View {
     let version: Int
 
@@ -167,9 +136,8 @@ private struct ProtocolWarningLine: View {
 
 private struct MenuSourceSection: View {
     let section: FleetSourceSection
-    /// Header row string. nil means no header (the local endpoint is the only
-    /// one, or the local hidden setting). Remote sections put the checkbox in
-    /// the header, so while remotes exist the caller always passes non-nil.
+    // nil drops the header. A remote section hosts its monitoring checkbox in
+    // the header, so callers never pass nil while remotes are visible.
     let headerTitle: String?
     let rowContext: (SourcePaneID) -> AgentRowContext?
     let excerptState: ((SourcePaneID) -> AgentExcerptState?)?
@@ -181,9 +149,9 @@ private struct MenuSourceSection: View {
             if let headerTitle {
                 header(title: headerTitle)
                     .padding(.horizontal, 17)
-                    // With monitoring off there are no body rows and the header
-                    // becomes the section's last element, so give it the same 3pt
-                    // bottom as a row to keep the 19pt total with the 16pt section spacing.
+                    // With monitoring off the header is the section's last
+                    // element, so it takes over a row's 3pt bottom to keep the
+                    // 19pt gap between sections.
                     .padding(.bottom, section.state == .disabled ? 3 : 0)
             } else if let warning = section.protocolWarning {
                 ProtocolWarningLine(version: warning)
@@ -200,6 +168,8 @@ private struct MenuSourceSection: View {
                         hoverStyle: .menu,
                         rowContext: rowContext,
                         excerptState: excerptState,
+                        // Hold the excerpt line's height up front, or the menu
+                        // panel resizes each time an excerpt arrives.
                         reservesExcerptLine: true,
                         onFocus: section.isRemote ? nil : onLocalFocus
                     )
@@ -249,10 +219,9 @@ private struct MenuSourceSection: View {
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 17)
-            // Match AgentGroupList's vertical rhythm: 8pt from the header when
-            // combined with the VStack spacing of 2 (same as a workspace header),
-            // and the same 3pt as a row toward the section boundary, adding to
-            // the 16pt section spacing.
+            // Matches AgentGroupList's rhythm: 6 plus the VStack's 2 gives the
+            // 8pt a workspace header keeps below the section header, and the
+            // 3pt bottom is what a row contributes to the section gap.
             .padding(.top, 6)
             .padding(.bottom, 3)
     }
@@ -260,17 +229,12 @@ private struct MenuSourceSection: View {
 
 // MARK: - Pop-out window section
 
-/// Wraps the section body in a rounded card. The header is a label outside the
-/// card; inside the card is the same AgentGroupList as menu (workspace headers
-/// + rows). There is no checkbox, so monitoring OFF is shown as a single
-/// "monitoring off" line inside the card.
 private struct WindowSourceSection: View {
     let section: FleetSourceSection
-    /// Header row string. nil means no header (the local endpoint is the only
-    /// one, or the local hidden setting), and only the card is drawn.
+    // nil drops the header and draws the card alone.
     let headerTitle: String?
-    /// Current cross-source row identity requested by notification navigation.
-    /// It may belong to another section; AgentGroupList compares the full ID.
+    // Set by notification navigation and may name a pane in another section,
+    // so AgentGroupList compares the whole source-qualified ID.
     let highlightedPaneID: SourcePaneID?
     let rowContext: (SourcePaneID) -> AgentRowContext?
     let excerptState: ((SourcePaneID) -> AgentExcerptState?)?
@@ -279,10 +243,8 @@ private struct WindowSourceSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             if let headerTitle {
-                // Label outside the card. One step smaller and dimmer than the
-                // card's text to establish hierarchy against the card (content).
-                // The 4pt horizontal padding is a fine-tune for the visual
-                // alignment between the card's corner curve and the text's left edge.
+                // The 4pt inset makes the label's left edge look aligned with
+                // the card below it, whose corner curve pulls its content in.
                 HStack(spacing: 5) {
                     Text(headerTitle)
                         .font(.subheadline.weight(.semibold))
@@ -316,8 +278,8 @@ private struct WindowSourceSection: View {
                     }
                 }
             } else if section.state == .disabled {
-                // In menu the header checkbox conveys OFF, but window has no
-                // checkbox, so the state string ("monitoring off") is shown as the body.
+                // This surface has no header checkbox to convey OFF, so the
+                // state has to be spelled out in the body.
                 card { stateMessage(MonitoredSourceState.disabled.message) }
             } else if let message = section.statusMessage {
                 card { stateMessage(message) }
@@ -325,9 +287,8 @@ private struct WindowSourceSection: View {
         }
     }
 
-    /// Body surface floated one step above the window background. A hairline
-    /// border is layered over the quinary fill so the outline stays visible in
-    /// both light and dark appearances.
+    // The quinary fill alone does not separate from the window background in
+    // every appearance, so a hairline border is layered over it.
     private func card(@ViewBuilder content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             content()
@@ -348,7 +309,7 @@ private struct WindowSourceSection: View {
         Text(message)
             .font(.callout)
             .foregroundStyle(.secondary)
-            // Same left edge as AgentGroupList's row text (5 + 12 = 17pt).
+            // 17 = the 5 + 12 that puts AgentGroupList's row text at this edge.
             .padding(.horizontal, 17)
             .padding(.vertical, 4)
     }

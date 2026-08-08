@@ -1,17 +1,11 @@
-// Resolves an agent kind (Pane.agent) to a brand mark image.
-// Assets are vectors at Resources/AgentMarks/<agent>-<style>.pdf, where the
-// <agent> in the filename matches herdr's detection label (claude, codex, ...).
-// mono is a solid black fill. The display side (AgentRow) renders it as a
-// template and repaints it with the foreground color, so this fill color itself
-// never appears on screen.
-// color is filled with the brand colors as-is and is meant to be rendered original.
-// Which one is used is chosen by AgentRow according to the setting (colorAgentIconsKey).
-// Agent names without an asset return nil, and the caller falls back to the
-// conventional text display.
+// Assets are Resources/AgentMarks/<agent>-<style>.pdf, where <agent> matches
+// herdr's detection label (claude, codex, ...). The mono fill is plain black
+// because AgentRow draws it as a template and repaints it with the foreground
+// color, so that fill never reaches the screen.
 
 import AppKit
 
-/// Mark fill variants. The rawValue is the asset filename suffix.
+// The rawValue is the asset filename suffix.
 enum AgentIconStyle: String {
     case mono
     case color
@@ -19,11 +13,10 @@ enum AgentIconStyle: String {
 
 @MainActor
 enum AgentIcons {
-    /// Cache of resolution results. Agents without an asset are remembered as
-    /// nil too, so a Bundle lookup doesn't run on every row redraw.
+    // Misses are cached as nil as well, to keep a Bundle lookup out of every
+    // row redraw.
     private static var cache: [String: NSImage?] = [:]
 
-    /// Returns the mark for an agent name; nil when no matching asset exists.
     static func icon(for agent: String, style: AgentIconStyle = .mono) -> NSImage? {
         let key = "\(agent)-\(style.rawValue)"
         if let cached = cache[key] { return cached }

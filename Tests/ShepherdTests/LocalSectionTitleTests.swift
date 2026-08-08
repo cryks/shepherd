@@ -1,9 +1,3 @@
-// Verifies resolution of the local-section title setting (standard / custom / hidden plus
-// the whitespace fallback), its persistence to UserDefaults, and the wiring into
-// FleetSourceSection. UserDefaults uses a dedicated suite so the tests neither read nor
-// pollute the settings of the machine they run on. Expected strings depend on the display
-// language, so each test pins it to the base language (English).
-
 import Foundation
 import XCTest
 @testable import Shepherd
@@ -89,19 +83,19 @@ final class LocalSectionTitleTests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// An isolated UserDefaults suite per test. The whole domain is removed at teardown.
+    // A per-test suite keeps the machine's own settings out of the results.
     private func makeDefaults() -> UserDefaults {
         let suiteName = "LocalSectionTitleTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
-        // Pass only the Sendable suiteName to teardown; do not send the UserDefaults
-        // instance across the actor boundary (avoids SendingRisksDataRace).
+        // Rebuild from the Sendable suiteName instead of capturing `defaults`, which
+        // would cross an actor boundary and trip SendingRisksDataRace.
         addTeardownBlock {
             UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
         }
         return defaults
     }
 
-    /// Pins the expected title strings to the base language (English).
+    // The expected titles are the base-language strings, so pin the language.
     @MainActor
     private func withEnglish(_ body: () -> Void) {
         let original = LanguageSetting.shared.selection

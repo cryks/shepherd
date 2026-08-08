@@ -1,14 +1,3 @@
-// Exercises the excerpt staging layer between AttentionMonitor's effects and
-// Notification Center delivery: pass-through when the excerpt lookup returns
-// nil, release on a fresh excerpt or on hold expiry, cancellation through
-// remove/removeAll, and same-ID replacement. The lookup is backed by an
-// @Observable fixture so the tests drive the same withObservationTracking
-// path the app uses against FleetStore.
-//
-// The render closure stands in for the app's template rendering: it marks the
-// body with the excerpt it was handed, which is how these tests tell a released
-// notice from the staged one and see which excerpt reached the release.
-
 import Foundation
 import Observation
 import XCTest
@@ -64,7 +53,7 @@ final class AttentionNoticeStagerTests: XCTestCase {
         )
 
         stager.apply([.deliver(makeNotice())])
-        // Rewriting the staged text must not release; only a different text may.
+        // Re-setting the same text is not a change, so nothing may release.
         fixture.states[paneID] = .available(excerpt("previous answer"))
         await drainMainActor()
         XCTAssertTrue(sink.batches.isEmpty)
@@ -99,8 +88,7 @@ final class AttentionNoticeStagerTests: XCTestCase {
         ]])
     }
 
-    /// A pane that left the snapshot renders nothing, and the notice staged at
-    /// the transition is what gets delivered.
+    // A render returning nil models a pane that left the snapshot.
     func testRenderDecliningLeavesTheStagedNotice() async {
         let fixture = ExcerptStateFixture()
         fixture.states[paneID] = .available(excerpt("May I edit main.swift?"))
@@ -153,7 +141,6 @@ final class AttentionNoticeStagerTests: XCTestCase {
         stager.apply([.remove(notice.id)])
         XCTAssertEqual(sink.batches, [[.remove(notice.id)]])
 
-        // Neither a later excerpt change nor the expired hold may deliver.
         fixture.states[paneID] = .available(excerpt("too late"))
         try await Task.sleep(for: .milliseconds(200))
         XCTAssertEqual(sink.batches, [[.remove(notice.id)]])
@@ -218,8 +205,8 @@ final class AttentionNoticeStagerTests: XCTestCase {
         )
     }
 
-    /// Stands in for the app's template rendering by marking the body with the
-    /// excerpt it was handed.
+    // Marks the body with the excerpt it was handed, which is how the tests
+    // tell which excerpt released the notice.
     private static func appendingExcerpt(
         _ notice: AttentionNotice,
         _ excerpt: String
@@ -257,8 +244,8 @@ final class AttentionNoticeStagerTests: XCTestCase {
         )
     }
 
-    /// Lets the observation onChange -> MainActor task hop settle before the
-    /// test asserts that nothing was forwarded.
+    // Lets the observation onChange -> MainActor hop settle, so that finding
+    // nothing forwarded is a result and not a race.
     private func drainMainActor() async {
         for _ in 0..<8 {
             await Task.yield()
@@ -266,9 +253,9 @@ final class AttentionNoticeStagerTests: XCTestCase {
     }
 }
 
-/// Observable stand-in for FleetStore.agentExcerptState(for:). A missing
-/// entry models a pane without excerpt support (preference off, unsupported
-/// grammar), which the stager must forward without holding.
+// @Observable so the tests drive the same withObservationTracking path the app
+// uses against FleetStore. A missing entry models a pane without excerpt
+// support, such as the preference being off.
 @Observable @MainActor
 private final class ExcerptStateFixture {
     var states: [SourcePaneID: AgentExcerptState] = [:]

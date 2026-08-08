@@ -1,9 +1,3 @@
-// Exercises the platform-neutral attention reducer and its FleetStore Observation
-// adapter. Notification Center behavior is covered by the delivery-layer tests;
-// these tests pin which value effects are emitted and when a current click target
-// remains resolvable. Notice text reaches the reducer already rendered, so it is
-// fixture data here; the rendering itself runs through the adapter test.
-
 import Foundation
 import XCTest
 @testable import Shepherd
@@ -97,7 +91,7 @@ final class AttentionMonitorTests: XCTestCase {
         var machine = AttentionStateMachine()
         _ = machine.start(enabled: true, fleet: fleet(source(status: .blocked)))
 
-        // Baseline attention did not issue a notice, so resolving it has nothing to remove.
+        // start() only records the baseline, so this .blocked never issued a notice.
         XCTAssertTrue(machine.ingest(fleet(source(status: .working))).isEmpty)
 
         let delivered = try deliveredNotice(
@@ -283,9 +277,8 @@ final class AttentionMonitorTests: XCTestCase {
         XCTAssertTrue(machine.ingest(fleet(source(status: .done))).isEmpty)
     }
 
-    /// Rendered text reaching the reducer is data, not a trigger: it changes
-    /// whenever a source is renamed or a template edited, and the banner it
-    /// produces is the one captured at the attention transition.
+    // Renaming a source or editing a template rewrites this text at any moment, so
+    // it is data to the reducer, never a trigger.
     func testTextChangesAloneDeliverNothingAndTheNextTransitionCarriesThem() throws {
         var machine = AttentionStateMachine()
         _ = machine.start(
@@ -336,8 +329,8 @@ final class AttentionMonitorTests: XCTestCase {
         XCTAssertNotEqual(notices[0].threadIdentifier, notices[1].threadIdentifier)
     }
 
-    /// The `{source}` variable that names an endpoint in a banner reads this
-    /// flag, so a local-only fleet — the common case — leaves it out.
+    // The `{source}` variable in a banner reads this flag, so a local-only fleet
+    // must not name an endpoint at all.
     @MainActor
     func testSourceLabelsAppearOnlyWhileARemoteSectionIsVisible() {
         let localOnly = FleetStore(
@@ -371,9 +364,7 @@ final class AttentionMonitorTests: XCTestCase {
         XCTAssertFalse(fleetWithHiddenRemote.showsSourceLabels)
     }
 
-    /// The body is a list of lines: one that renders empty leaves no blank line
-    /// behind, and an empty title is filled from the first line that survived,
-    /// since the title is the field macOS always shows.
+    // macOS always shows the title, so an empty one has to borrow a body line.
     func testEmptyBodyLinesAreDroppedAndTheFirstOneFillsAnEmptyTitle() {
         let values = ["agent": "codex", "branch": ""]
         let templates = NotificationTemplates(
@@ -504,8 +495,8 @@ final class AttentionMonitorTests: XCTestCase {
         )
     }
 
-    /// taskTitle stands in for both the pane's terminal title and the rendered
-    /// notification title, the way the default title template relates them.
+    // taskTitle fills both fields because the default title template renders the
+    // pane's terminal title.
     private func agent(
         status: AgentStatus,
         paneID: String,
@@ -548,8 +539,8 @@ final class AttentionMonitorTests: XCTestCase {
         Workspace(workspaceId: "w1", label: "Workspace", number: 1)
     }
 
-    /// No raw records: the notification title this fixture drives comes from
-    /// `{title}`, which reads the typed pane.
+    // No raw records needed: the notification title comes from `{title}`, which
+    // reads the typed pane.
     private func serverSnapshot(status: AgentStatus) -> SnapshotFetch {
         SnapshotFetch(
             session: HerdrSessionSnapshot(

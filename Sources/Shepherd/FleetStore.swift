@@ -1,16 +1,3 @@
-// Owns the full set of connection endpoints for Shepherd. There is always exactly
-// one local Herdr, and each remote enabled in settings gets its own independent
-// Store and SSH tunnel. A disconnect or resync on one endpoint never discards
-// another endpoint's snapshot; the menu bar state aggregates only the currently
-// ready snapshots, in blocked > done > working > quiet priority order.
-//
-// Remotes are monitor-only; agent.focus is exposed only to the local source. Only
-// RemoteSourceConfiguration and RemoteTunnel's remote socket path cache are
-// persisted; the Store, tunnel state, and local forwarding socket are rebuilt for
-// each runtime. On configuration changes, a monitor whose ID and SSH connection
-// parameters are unchanged is reused, so edits limited to the display name or poll
-// interval do not drop the SSH connection.
-
 import AppKit
 import Foundation
 import Observation
@@ -19,7 +6,6 @@ import os
 
 private let fleetLog = Logger(subsystem: "io.github.cryks.shepherd", category: "fleet")
 
-/// Display state that collapses the set of connected sources into a single menu bar icon.
 enum MenuBarState {
     case disconnected
     case quiet
@@ -28,9 +14,6 @@ enum MenuBarState {
     case blocked
 }
 
-/// UI-facing connection state for a single endpoint. Collapses the Store's sync
-/// state and the remote tunnel's startup state into one value so the view layer
-/// does not have to switch over transport implementation details.
 enum MonitoredSourceState: Equatable {
     case disabled
     case disconnected
@@ -42,9 +25,8 @@ enum MonitoredSourceState: Equatable {
     case protocolMismatch(Int)
     case failed
 
-    /// @MainActor because tr(_:ja:) observes the language setting. The view layer
-    /// (SourceList, Settings) reads this during body evaluation, so a language
-    /// switch redraws immediately.
+    // @MainActor because tr() observes the language setting: reading this during
+    // body evaluation makes a language switch redraw right away.
     @MainActor var message: String {
         switch self {
         case .disabled:
@@ -69,26 +51,17 @@ enum MonitoredSourceState: Equatable {
     }
 }
 
-/// One-line description of optimistic monitoring on an untested protocol.
-/// Shown as the warning badge's tooltip, as the stand-in warning line, and in
-/// the Settings status column.
 @MainActor
 func protocolWarningDescription(_ version: Int) -> String {
     tr("herdr protocol \(version) is untested", ja: "herdr protocol \(version) は未検証")
 }
 
-/// One section as displayed. Local has `configuration == nil` and `source != nil`;
-/// a remote has `configuration != nil`, with `source == nil` only while monitoring
-/// is off. Letting the remote configuration outlive the runtime keeps the section
-/// header — same ID, same ordering — even after unchecking the checkbox stops the
-/// SSH process.
+// A remote keeps its configuration after its runtime is gone, so the section
+// header survives a monitoring-OFF toggle with the same ID and position.
 @MainActor
 struct FleetSourceSection: Identifiable {
-    /// A fixed ID for local; the persistent configuration's ID for a remote.
     let id: HerdrSourceID
-    /// nil means local. For a remote it is non-nil regardless of the ON/OFF state.
     let configuration: RemoteSourceConfiguration?
-    /// The currently running monitoring runtime. nil only for a remote whose monitoring is off.
     let source: MonitoredSource?
 
     init(localSource: MonitoredSource) {
@@ -116,9 +89,6 @@ struct FleetSourceSection: Identifiable {
         configuration?.isEnabled ?? true
     }
 
-    /// Section header. For a remote, the persistent configuration's display name.
-    /// For local, the label selected for presentation alongside remotes; nil when
-    /// the hidden setting is chosen (the view layer draws no header row).
     var headerTitle: String? {
         if let configuration { return configuration.displayName }
         return LocalSectionTitleSetting.shared.localTitleWithRemotes
@@ -129,17 +99,11 @@ struct FleetSourceSection: Identifiable {
         return source?.state ?? .disconnected
     }
 
-    /// The single line shown in the section body while not ready. When monitoring
-    /// is off the checkbox already conveys OFF, so there is no body and this is nil
-    /// (the view layer renders a header-only section).
     var statusMessage: String? {
         guard isEnabled else { return nil }
         return source?.statusMessage ?? tr("Starting…", ja: "起動準備中…")
     }
 
-    /// Non-nil while this endpoint is monitored on an untested protocol; the
-    /// header (or a stand-in line when the layout has no header) shows a
-    /// warning badge.
     var protocolWarning: Int? {
         source?.protocolWarning
     }
@@ -149,18 +113,12 @@ struct FleetSourceSection: Identifiable {
     }
 }
 
-/// Runtime that monitors local or one remote. Starts the Store only after the
-/// remote tunnel becomes ready, so connection failures during socket discovery do
-/// not pollute the Store's reconnection log. A stopped Store is never reused;
-/// FleetStore's configuration reconciliation creates a fresh runtime.
 @Observable @MainActor
 final class MonitoredSource: Identifiable {
     let id: HerdrSourceID
-    /// Identifies this runtime rather than its persisted endpoint. Reconnecting an
-    /// existing tunnel keeps the value, while disabling monitoring or changing
-    /// connection parameters creates a new runtime and therefore a new value.
-    /// Attention monitoring uses this boundary to baseline the replacement instead
-    /// of comparing agents from two different Herdr servers.
+    // Identifies the runtime, not the persisted endpoint. A reconnect keeps the
+    // value; a new runtime gets a new one so attention monitoring re-baselines
+    // instead of comparing agents from two different herdr servers.
     let attentionGenerationID = AttentionSourceGenerationID()
     private(set) var configuration: RemoteSourceConfiguration?
     let store: Store
@@ -206,10 +164,9 @@ final class MonitoredSource: Identifiable {
         configuration != nil
     }
 
-    /// For a remote, returns a snapshot only while both the tunnel and the Store are
-    /// ready. The transport state is part of the condition so that, in the window
-    /// right after a disconnect before the Store's callback reaches the MainActor,
-    /// a stale snapshot never leaks into the fleet's menu bar state even briefly.
+    // The tunnel state is checked as well as the Store state: between a
+    // disconnect and the Store callback reaching the MainActor, the Store still
+    // holds a stale snapshot that must not reach the menu bar.
     var availableSnapshot: AgentSnapshot? {
         if isRemote {
             guard let tunnelState, case .ready = tunnelState else { return nil }
@@ -250,18 +207,11 @@ final class MonitoredSource: Identifiable {
         }
     }
 
-    /// Non-nil while this endpoint is monitored on a protocol this app was not
-    /// written against (and, for a remote, the tunnel is up). UI surfaces show
-    /// a warning badge next to the endpoint's name.
     var protocolWarning: Int? {
         guard state == .ready else { return nil }
         return store.protocolWarning
     }
 
-    /// Maps a tunnel failure to a short per-cause message, annotated with whether it
-    /// is retrying or stopped. The stderr body is split out into connectionDiagnostic
-    /// so SSH output does not flood the narrow source list. A ready source on an
-    /// untested protocol reports that warning instead of a plain "Connected".
     var statusMessage: String {
         guard let failure = tunnelFailure else {
             if let warning = protocolWarning {
@@ -276,9 +226,9 @@ final class MonitoredSource: Identifiable {
         return summary
     }
 
-    /// RemoteTunnel guarantees control-character stripping and the 4 KiB cap on SSH
-    /// stderr / probe errors. Shown only in the Settings help; the regular source
-    /// list displays only the failure classification.
+    // Safe to show as-is: RemoteTunnel strips control characters and caps SSH
+    // stderr at 4 KiB. Still Settings-only, because the source list is too
+    // narrow for a stderr dump.
     var connectionDiagnostic: String? {
         guard let failure = tunnelFailure, !failure.diagnostic.isEmpty else { return nil }
         return failure.diagnostic
@@ -288,8 +238,8 @@ final class MonitoredSource: Identifiable {
         store.workspaceGroups
     }
 
-    /// Local starts the Store immediately. For a remote, the tunnel's ready callback
-    /// starts the Store after a ping over the forwarded socket succeeds.
+    // A remote Store starts only once the tunnel reports ready, so failures
+    // during socket discovery never enter the Store's reconnection log.
     func start() {
         guard !hasStarted, !hasStopped else { return }
         hasStarted = true
@@ -317,8 +267,8 @@ final class MonitoredSource: Identifiable {
         tunnel.start()
     }
 
-    /// Detaches the callback before stopping the socket/process, so state transitions
-    /// caused by the shutdown never reach the UI of an already-removed source.
+    // Detach the callback first: shutdown state changes must not reach the UI
+    // of a source that is already removed.
     func stop() {
         guard !hasStopped else { return }
         hasStopped = true
@@ -329,24 +279,20 @@ final class MonitoredSource: Identifiable {
         tunnel?.stop()
     }
 
-    /// Halts polling during system sleep. Sets suspend up front even while the Store
-    /// has not started yet because it is waiting for tunnel ready, so a ready event
-    /// arriving mid-transition to sleep does not make the Store start fetching.
-    /// The SSH tunnel is left running: the whole process is frozen by sleep, and if
-    /// the connection is broken after wake, RemoteTunnel's retry restores forwarding
-    /// on the same local socket.
+    // The SSH tunnel keeps running across sleep: the process is frozen anyway,
+    // and RemoteTunnel's retry restores forwarding on the same local socket if
+    // the connection broke.
     func suspendPolling() {
         store.suspendPolling()
     }
 
-    /// Resumes polling on wake from sleep. The Store fetches once immediately.
     func resumePolling() {
         store.resumePolling()
     }
 
-    /// Treats the endpoint as identical when the SSH alias and session match. The
-    /// label, enabled flag, and poll interval do not affect the transport, so those
-    /// updates keep the existing Store and SSH tunnel.
+    // Only the fields that define the transport are compared, so editing the
+    // display name, the enabled flag or the poll interval does not drop the
+    // SSH connection.
     func canReuse(for candidate: RemoteSourceConfiguration) -> Bool {
         guard let configuration else { return false }
         return configuration.id == candidate.id
@@ -430,10 +376,6 @@ typealias EndpointStoreFactory = @MainActor (
     _ pollInterval: Duration
 ) -> Store
 
-/// Jump-to-local-pane action. Separates FleetStore's source guard from the actual
-/// RPC so tests can assert this dependency is never invoked for a remote source.
-/// Completion covers pane selection, Shepherd activation, and the terminal
-/// activation request.
 struct LocalAgentFocus {
     var focus: @MainActor (_ pane: Pane) async -> Void
 
@@ -441,9 +383,8 @@ struct LocalAgentFocus {
         self.focus = focus
     }
 
-    /// Builds the live activation sequence around an agent request. request
-    /// receives the pane ID from the latest snapshot because protocol 19 agent
-    /// methods reject terminal IDs.
+    // request gets the pane ID, not a terminal ID: protocol 19 agent methods
+    // reject terminal IDs.
     init(
         request: @escaping @MainActor (_ target: String) async throws -> Void,
         applicationActivation:
@@ -478,9 +419,8 @@ struct LocalAgentFocus {
     )
 }
 
-/// Brings the configured terminal to the foreground after `agent.focus` selects
-/// its pane and Shepherd has become active. Completion means NSWorkspace accepted
-/// the cooperative activation request; target frontmost state remains AppKit-owned.
+// activate() completes when NSWorkspace accepts the cooperative activation
+// request. Whether the terminal really becomes frontmost stays with AppKit.
 struct TerminalApplicationActivation {
     var activate: @MainActor () async -> Void
 
@@ -513,20 +453,13 @@ struct TerminalApplicationActivation {
     }
 }
 
-/// The app's top-level state. activeSources owns only the local runtime plus the
-/// remotes that are both visible and monitoring-enabled; sourceSections exposes
-/// local first, then visible remotes in configuration order. A remote with
-/// monitoring OFF keeps only its section and never creates a Store, SSH process,
-/// or temporary socket. A remote with visibility OFF (isVisible == false) emits no
-/// section at all, and its runtime is stopped even if monitoring is ON.
 @Observable @MainActor
 final class FleetStore {
     private(set) var activeSources: [MonitoredSource]
     private(set) var remoteConfigurations: [RemoteSourceConfiguration]
-    /// True while at least one SwiftUI instance of the singleton Monitor scene
-    /// is mounted. Outgoing and incoming instances can overlap during window
-    /// reopening, so this derives from presence leases rather than last-writer
-    /// appear/disappear callbacks.
+    // Counted with presence leases rather than a flag: while the Monitor window
+    // reopens, the outgoing and incoming SwiftUI instances overlap, and the
+    // last appear/disappear callback to arrive is not the current one.
     var monitorWindowVisible: Bool {
         !monitorWindowPresenceIDs.isEmpty
     }
@@ -539,8 +472,6 @@ final class FleetStore {
     private var hasStarted = false
     private var hasStopped = false
     private var monitorWindowPresenceIDs: Set<UUID> = []
-    /// true while the system is asleep. Sources created by reconcileSources during
-    /// this window are also suspended, and resumePolling() resumes them all at once.
     private var isPollingSuspended = false
 
     init(
@@ -575,10 +506,6 @@ final class FleetStore {
         reconcileSources()
     }
 
-    /// Ordered projection displayed by the menu and the monitor window. Even after a
-    /// monitoring-OFF operation removes the runtime, the same section is rebuilt from
-    /// the configuration. A visibility-OFF remote produces no section, so it
-    /// disappears from both screens, header and all.
     var sourceSections: [FleetSourceSection] {
         let remoteSources = Dictionary(
             uniqueKeysWithValues: activeSources
@@ -619,9 +546,6 @@ final class FleetStore {
         activeSources.forEach { $0.start() }
     }
 
-    /// Stops all polling and managed SSH processes at app termination. A stopped
-    /// fleet never reuses its session generation; the next app launch rebuilds it
-    /// from configuration.
     func stop() {
         guard !hasStopped else { return }
         hasStopped = true
@@ -629,25 +553,20 @@ final class FleetStore {
         activeSources.forEach { $0.stop() }
     }
 
-    /// Stops polling on all sources just before system sleep. Called by
-    /// ShepherdApplicationDelegate on NSWorkspace.willSleepNotification.
     func suspendPolling() {
         guard !isPollingSuspended else { return }
         isPollingSuspended = true
         activeSources.forEach { $0.suspendPolling() }
     }
 
-    /// Resumes polling on all sources at wake from sleep. Called on NSWorkspace.didWakeNotification.
     func resumePolling() {
         guard isPollingSuspended else { return }
         isPollingSuspended = false
         activeSources.forEach { $0.resumePolling() }
     }
 
-    /// If at least one source is ready, unconnected sources are excluded from the
-    /// aggregation, so one stopped remote does not hide local's blocked/done behind
-    /// the dashed (disconnected) icon. With zero ready sources the whole fleet is
-    /// disconnected.
+    // Callers pass only the snapshots of ready sources, so one stopped remote
+    // cannot hide local's blocked or done behind the disconnected icon.
     static func aggregateMenuBarState(_ snapshots: [AgentSnapshot]) -> MenuBarState {
         guard !snapshots.isEmpty else { return .disconnected }
         let statuses = Set(
@@ -668,15 +587,13 @@ final class FleetStore {
         try commit(remoteConfigurations + [configuration])
     }
 
-    /// Updates the SSH connection parameters and display name. The visibility and
-    /// monitoring ON/OFF flags keep their current values, so a stale editor draft
-    /// opened in another window cannot roll back toggles in the settings list or
-    /// checkbox operations in the menu.
     func updateRemote(_ configuration: RemoteSourceConfiguration) throws {
         guard let index = remoteConfigurations.firstIndex(where: { $0.id == configuration.id }) else {
             throw RemoteSourceMutationError.sourceNotFound
         }
         var candidate = remoteConfigurations
+        // Both toggles are taken from the stored copy, never from the argument:
+        // a stale editor draft must not roll back a checkbox flipped elsewhere.
         var updated = configuration
         updated.isVisible = candidate[index].isVisible
         updated.isEnabled = candidate[index].isEnabled
@@ -684,9 +601,6 @@ final class FleetStore {
         try commit(candidate)
     }
 
-    /// Persists the menu panel checkbox state and applies it to the runtime set. OFF
-    /// stops the tunnel but keeps the configuration, so the sourceSections header
-    /// remains visible.
     func setRemoteEnabled(id: HerdrSourceID, isEnabled: Bool) throws {
         guard let index = remoteConfigurations.firstIndex(where: { $0.id == id }) else {
             throw RemoteSourceMutationError.sourceNotFound
@@ -696,11 +610,8 @@ final class FleetStore {
         try commit(candidate)
     }
 
-    /// Persists the per-host toggle in the settings Remotes list and applies it to
-    /// the runtime set. This flag sits above isEnabled: OFF removes the section from
-    /// sourceSections, header included, and stops the tunnel even for a remote with
-    /// monitoring ON. isEnabled itself is not rewritten, so turning it back ON lets a
-    /// remote that had monitoring ON resume monitoring as-is.
+    // Visibility sits above isEnabled and leaves it alone, so turning a host
+    // back on resumes monitoring exactly as it was left.
     func setRemoteVisible(id: HerdrSourceID, isVisible: Bool) throws {
         guard let index = remoteConfigurations.firstIndex(where: { $0.id == id }) else {
             throw RemoteSourceMutationError.sourceNotFound
@@ -717,9 +628,8 @@ final class FleetStore {
         try commit(remoteConfigurations.filter { $0.id != id })
     }
 
-    /// Persists a drag reorder in the settings screen. Arguments follow the SwiftUI
-    /// onMove convention: destination is the insertion index into the array before
-    /// the elements are removed.
+    // Arguments follow the SwiftUI onMove convention: destination is an index
+    // into the array before the moved elements are removed.
     func moveRemote(fromOffsets source: IndexSet, toOffset destination: Int) throws {
         var candidate = remoteConfigurations
         candidate.move(fromOffsets: source, toOffset: destination)
@@ -730,16 +640,10 @@ final class FleetStore {
         activeSources.first { $0.id == id }
     }
 
-    /// True when at least one remote section is visible, which is when source
-    /// labels carry information. SourceList headings, notification subtitles and
-    /// the {source} template variable all read this.
     var showsSourceLabels: Bool {
         remoteConfigurations.contains(where: \.isVisible)
     }
 
-    /// Everything one row needs to resolve template variables, or nil when the
-    /// pane is not in its endpoint's current snapshot — the endpoint dropped
-    /// between the list being built and a row being drawn.
     func rowContext(for paneID: SourcePaneID) -> AgentRowContext? {
         guard let source = monitoredSource(id: paneID.sourceID),
               let pane = source.store.panes[paneID.paneID] else { return nil }
@@ -754,15 +658,12 @@ final class FleetStore {
         )
     }
 
-    /// Label naming one endpoint in rows and notifications. nil while source
-    /// labels are suppressed, and for local while its label is set to hidden.
     private func sourceLabel(of source: MonitoredSource) -> String? {
         guard showsSourceLabels else { return nil }
         if let configuration = source.configuration { return configuration.displayName }
         return LocalSectionTitleSetting.shared.localTitleWithRemotes
     }
 
-    /// Display-safe Excerpt for one currently ready source pane.
     func agentExcerpt(for paneID: SourcePaneID) -> AgentExcerpt? {
         guard let state = agentExcerptState(for: paneID),
               case .available(let excerpt) = state else {
@@ -771,11 +672,6 @@ final class FleetStore {
         return excerpt
     }
 
-    /// Loading state for one ready Codex or Claude pane. nil means the excerpt
-    /// preference is off or the pane has no supported terminal grammar;
-    /// `{excerpt}` then resolves empty and no line reserves height for it. A
-    /// supported pane returns loading until its first background read
-    /// completes, so the menu reserves that line in its first layout.
     func agentExcerptState(for paneID: SourcePaneID) -> AgentExcerptState? {
         guard ExcerptSetting.shared.isEnabled,
               let source = monitoredSource(id: paneID.sourceID),
@@ -787,29 +683,21 @@ final class FleetStore {
         return source.store.agentExcerptState(for: paneID.paneID)
     }
 
-    /// Codex and Claude are the only terminal grammars with excerpt support in
-    /// the first screen-monitoring release.
     func isAgentContentSupported(_ pane: Pane) -> Bool {
         pane.agent.map(AgentExcerptMachine.supports(agentID:)) ?? false
     }
 
-    /// Acquires one Monitor scene presence lease. Repeated appear callbacks
-    /// from the same view instance are idempotent. The lease derives
-    /// monitorWindowVisible; excerpt reads run in the background regardless of
-    /// mounted surfaces.
     func monitorWindowDidAppear(_ presenceID: UUID) {
         guard !hasStopped else { return }
         monitorWindowPresenceIDs.insert(presenceID)
     }
 
-    /// Releases one Monitor scene presence lease.
     func monitorWindowDidDisappear(_ presenceID: UUID) {
         monitorWindowPresenceIDs.remove(presenceID)
     }
 
-    /// Remote rows are never handed a call site for this. The sourceID check is
-    /// layered here as well, so a miswired view cannot send agent.focus to a remote
-    /// herdr.
+    // Remote rows never reach this call site; the guard is a second layer so a
+    // miswired view cannot send agent.focus to a remote herdr.
     func focus(_ pane: Pane, sourceID: HerdrSourceID) async {
         guard sourceID == .local else { return }
         await localAgentFocus.focus(pane)

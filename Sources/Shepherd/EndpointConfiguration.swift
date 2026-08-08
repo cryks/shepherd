@@ -1,27 +1,12 @@
-// Owns the persistent configuration for the Herdr endpoints Shepherd monitors,
-// plus the UI identities that stay collision-free across endpoints. This file
-// persists SSH destinations, display settings, and the remote poll interval to
-// UserDefaults; the socket path cache owned by RemoteTunnel, connection state,
-// retry counts, errors, and fetched panes are not stored here.
-// The local connection is represented by a fixed ID; remote connections keep
-// the UUID minted at creation across subsequent restarts. Pane/workspace IDs
-// returned by Herdr are unique only within a server, so the display layer must
-// always combine them with the source ID.
-
 import Foundation
 
-/// Stable ID that identifies a Herdr endpoint within Shepherd.
-/// `local` is used only by this Mac's default connection; remote configurations
-/// are created with `remote(uuid:)`. Codable stores it as a single string so
-/// the configuration JSON's structure does not depend on the ID's implementation details.
 struct HerdrSourceID: RawRepresentable, Codable, Hashable, Sendable {
     let rawValue: String
 
     static let local = HerdrSourceID(rawValue: "local")
 
-    /// Creates an ID for a remote connection. Pass the argument only when tests
-    /// or configuration migrations need to reproduce the same UUID; a normal add
-    /// operation uses the default to mint a fresh ID.
+    // The argument exists for tests and migrations that must reproduce a known
+    // UUID; adding a remote from the UI always mints a fresh one.
     static func remote(uuid: UUID = UUID()) -> HerdrSourceID {
         HerdrSourceID(rawValue: "remote:\(uuid.uuidString.lowercased())")
     }
@@ -30,6 +15,8 @@ struct HerdrSourceID: RawRepresentable, Codable, Hashable, Sendable {
         self.rawValue = rawValue
     }
 
+    // Encoded as a bare string so the persisted configuration JSON does not
+    // change shape if this type gains stored properties.
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         rawValue = try container.decode(String.self)
@@ -40,7 +27,6 @@ struct HerdrSourceID: RawRepresentable, Codable, Hashable, Sendable {
         try container.encode(rawValue)
     }
 
-    /// Check used by RemoteSourceConfiguration to reject the reserved local ID and arbitrary strings.
     fileprivate var isRemote: Bool {
         let prefix = "remote:"
         guard rawValue.hasPrefix(prefix) else { return false }
@@ -48,8 +34,6 @@ struct HerdrSourceID: RawRepresentable, Codable, Hashable, Sendable {
     }
 }
 
-/// Represents input that cannot be saved as a remote monitoring target.
-/// Settings can map `validationError` directly to the error display on the input field.
 enum RemoteSourceValidationError: Error, Equatable, LocalizedError {
     case invalidSourceID
     case emptySSHAlias
@@ -82,9 +66,8 @@ enum RemoteSourceValidationError: Error, Equatable, LocalizedError {
     }
 }
 
-/// session.snapshot polling interval for a remote endpoint. The settings UI
-/// presents only this enumeration, so arbitrary decimal input cannot create a
-/// busy loop or unintentionally high-frequency SSH traffic.
+// A fixed set rather than a free number: the poll drives SSH traffic, and typed
+// input could ask for a rate close to a busy loop.
 enum RemotePollingInterval: Int, CaseIterable, Codable, Identifiable, Sendable {
     case halfSecond = 500
     case oneSecond = 1_000
@@ -114,31 +97,17 @@ enum RemotePollingInterval: Int, CaseIterable, Codable, Identifiable, Sendable {
     }
 }
 
-/// Persistent configuration for a remote Herdr whose SSH tunnel Shepherd manages.
-/// `sshAlias` is the destination passed to `/usr/bin/ssh` as a single argument;
-/// it accepts a Host name from `~/.ssh/config` or `user@host`. When sessionName
-/// is nil, the Herdr default session is monitored.
-/// pollInterval is the per-endpoint session.snapshot interval; 2 seconds is used
-/// when the stored value lacks it. On initialization and in the value returned
-/// by `validated()`, surrounding whitespace is stripped and an empty session is
-/// normalized to nil.
 struct RemoteSourceConfiguration: Identifiable, Codable, Equatable, Sendable {
     let id: HerdrSourceID
     var label: String
     var sshAlias: String
     var sessionName: String?
     var pollInterval: RemotePollingInterval
-    /// Per-host toggle in the settings Remotes list. It sits above isEnabled:
-    /// while false, the section itself is absent from the menu panel and the
-    /// monitor window, and FleetStore creates neither the Store nor the SSH
-    /// tunnel regardless of isEnabled's value. isEnabled is persisted without
-    /// being rewritten, so flipping back to true resumes monitoring for a
-    /// remote that had monitoring ON.
+    // isVisible outranks isEnabled: false hides the endpoint entirely, while
+    // isEnabled keeps its stored value so restoring visibility also restores
+    // whatever monitoring state the user last chose. Either being false stops
+    // FleetStore from building the Store and the SSH tunnel.
     var isVisible: Bool
-    /// Section checkbox in the menu panel. Even when false, the configuration
-    /// and section header remain, and FleetStore creates neither the
-    /// corresponding Store nor the SSH tunnel. The value survives a round trip
-    /// through UserDefaults.
     var isEnabled: Bool
 
     init(
@@ -159,10 +128,8 @@ struct RemoteSourceConfiguration: Identifiable, Codable, Equatable, Sendable {
         self.isEnabled = isEnabled
     }
 
-    /// pollInterval and isVisible have defaults and may be omitted from the JSON.
-    /// Even for hand-edited UserDefaults or a minimal configuration representation,
-    /// missing values are restored as the product defaults (pollInterval 2 seconds,
-    /// isVisible true).
+    // Stored JSON may be hand-edited or written without the optional keys, so
+    // those fall back to the product defaults instead of failing the decode.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
@@ -179,28 +146,23 @@ struct RemoteSourceConfiguration: Identifiable, Codable, Equatable, Sendable {
         )
     }
 
-    /// Name used for list headers. Allowing an empty label and falling back to
-    /// the SSH alias means adding a configuration does not require entering a
-    /// display name.
+    // The fallback lets the label stay empty, so adding a remote needs nothing
+    // beyond its SSH destination.
     var displayName: String {
         let normalizedLabel = Self.trim(label)
         return normalizedLabel.isEmpty ? Self.trim(sshAlias) : normalizedLabel
     }
 
-    /// Session passed to the Herdr CLI. Whitespace-only input becomes nil, the same as "default session".
     var normalizedSessionName: String? {
         Self.normalizeSessionName(sessionName)
     }
 
-    /// First error for the current input. When nil, `validated()` succeeds.
     var validationError: RemoteSourceValidationError? {
         Self.validationError(for: normalized())
     }
 
-    /// Returns the configuration with surrounding whitespace and empty sessions normalized.
-    /// Called both when saving from Settings and when reading the persisted JSON
-    /// back, so hand-edited UserDefaults cannot pass dangerous SSH arguments into
-    /// the execution path.
+    // Applied on load as well as on save: UserDefaults is user-writable, and
+    // these values reach an ssh argv.
     func validated() throws -> RemoteSourceConfiguration {
         let value = normalized()
         if let error = Self.validationError(for: value) {
@@ -235,10 +197,9 @@ struct RemoteSourceConfiguration: Identifiable, Codable, Equatable, Sendable {
         return nil
     }
 
-    /// The SSH destination is passed as a single Process argv entry, so there is
-    /// no need to narrow punctuation with a custom grammar. Only a leading `-`
-    /// (interpreted as an option) and whitespace or control characters (which
-    /// could look like multiple arguments or terminal control) are rejected.
+    // The destination is one argv entry, never a shell word, so punctuation needs
+    // no grammar. Only a leading `-`, which ssh would read as an option, and
+    // whitespace or control characters are unsafe.
     private static func isSafeSSHAlias(_ value: String) -> Bool {
         guard !value.hasPrefix("-") else { return false }
         return value.unicodeScalars.allSatisfy { scalar in
@@ -247,8 +208,8 @@ struct RemoteSourceConfiguration: Identifiable, Codable, Equatable, Sendable {
         }
     }
 
-    /// Checks Herdr's session grammar `[A-Za-z0-9._-]+` per ASCII scalar.
-    /// `.` and `..` consist solely of grammar characters but are excluded because Herdr reserves them.
+    // Herdr's session grammar is [A-Za-z0-9._-]+, but it reserves "." and "..",
+    // which that grammar would otherwise accept.
     private static func isValidSessionName(_ value: String) -> Bool {
         guard value != ".", value != "..", !value.isEmpty else { return false }
         let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
@@ -276,23 +237,18 @@ struct RemoteSourceConfiguration: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
-/// Display identity that does not collide even when multiple Herdr servers have the same pane ID.
+// Herdr pane and workspace IDs are unique only within one server, so the display
+// layer keys on them together with the source.
 struct SourcePaneID: Hashable, Sendable {
     let sourceID: HerdrSourceID
     let paneID: String
 }
 
-/// Display identity that does not collide even when multiple Herdr servers have the same workspace ID.
 struct SourceWorkspaceID: Hashable, Sendable {
     let sourceID: HerdrSourceID
     let workspaceID: String
 }
 
-/// Dependency boundary that separates reading and writing remote connection
-/// configurations from the Store. `load` falls back to an empty array when
-/// there is no stored value, the JSON is corrupt, or even one entry fails
-/// validation. `save` validates every entry before writing them as a single
-/// JSON array, so a partially updated configuration is never left behind.
 struct RemoteSourceRepository {
     var load: () -> [RemoteSourceConfiguration]
     var save: ([RemoteSourceConfiguration]) throws -> Void
@@ -305,11 +261,8 @@ struct RemoteSourceRepository {
         self.save = save
     }
 
-    /// UserDefaults implementation used by the app itself. Persistence is
-    /// limited to the JSON for `[RemoteSourceConfiguration]`.
     static let live = userDefaults(.standard)
 
-    /// UserDefaults implementation that lets a test suite use the same JSON contract as production.
     static func userDefaults(_ defaults: UserDefaults) -> RemoteSourceRepository {
         RemoteSourceRepository(
             load: {
@@ -321,10 +274,14 @@ struct RemoteSourceRepository {
                     )
                     return try decoded.map { try $0.validated() }
                 } catch {
+                    // One bad entry cannot be told apart from corrupt storage, and
+                    // starting with no remotes beats refusing to start.
                     return []
                 }
             },
             save: { configurations in
+                // Validate the whole array first: a partial write would leave the
+                // stored list disagreeing with what the user sees.
                 let validated = try configurations.map { try $0.validated() }
                 let data = try JSONEncoder().encode(validated)
                 defaults.set(data, forKey: userDefaultsKey)
@@ -332,6 +289,6 @@ struct RemoteSourceRepository {
         )
     }
 
-    /// Kept internal so @testable tests can inject corrupt JSON into the same storage location.
+    // Not private: tests write corrupt JSON to this exact key.
     static let userDefaultsKey = "RemoteHerdrSources"
 }

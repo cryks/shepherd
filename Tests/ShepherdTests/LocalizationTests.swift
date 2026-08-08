@@ -1,8 +1,3 @@
-// Verifies the display-language resolution rules and the persistence contract of the setting.
-// System resolution is reproduced by injecting the OS preferred-language list, so the tests
-// do not depend on the language settings of the machine they run on. UserDefaults uses a
-// test-only suite to avoid polluting standard.
-
 import Foundation
 import XCTest
 @testable import Shepherd
@@ -17,7 +12,6 @@ final class LocalizationTests: XCTestCase {
             ResolvedLanguage.systemPreferred(preferences: ["en-GB", "ja-JP"]),
             .english
         )
-        // Unsupported languages are skipped; the next matching supported language is used.
         XCTAssertEqual(
             ResolvedLanguage.systemPreferred(preferences: ["fr-FR", "ja"]),
             .japanese
@@ -61,7 +55,7 @@ final class LocalizationTests: XCTestCase {
         setting.selection = .english
         XCTAssertEqual(defaults.string(forKey: AppLanguage.userDefaultsKey), "en")
 
-        // Creating a fresh instance stands in for an app restart; the selection is restored from the stored value.
+        // A fresh instance over the same suite stands in for a relaunch.
         let restarted = LanguageSetting(defaults: defaults)
         XCTAssertEqual(restarted.selection, .english)
     }

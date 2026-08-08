@@ -1,8 +1,5 @@
-// Exercises AgentReadMonitor's transaction orchestration without opening a
-// Herdr socket. Each scripted observation preserves the production
-// agent.get -> agent.read -> agent.get boundary, while explicit gates expose
-// verification and cancellation states that cannot be asserted after a fully
-// synchronous response.
+// A scripted observation is three calls, agent.get / agent.read / agent.get, so
+// call counts here advance in threes.
 
 import Foundation
 import XCTest
@@ -271,7 +268,7 @@ final class AgentReadMonitorTests: XCTestCase {
         let firstRead = await waitForCompletedTransactions(1, in: script)
         XCTAssertTrue(firstRead)
 
-        // The agent settles while the user is reading history: no read.
+        // A non-zero scroll offset means the user is reading history, so no read.
         monitor.update(panes: [pane(
             status: .idle,
             revision: 10,
@@ -281,8 +278,8 @@ final class AgentReadMonitorTests: XCTestCase {
         let callsWhileScrolled = await script.recordedCalls().count
         XCTAssertEqual(callsWhileScrolled, 3)
 
-        // Back at the tail, the covered working status differs from idle,
-        // so this tick reads without waiting for another status change.
+        // The skipped tick left working covered, so idle still counts as a change
+        // and this tick reads at once.
         monitor.update(panes: [pane(status: .idle, revision: 10)])
         let secondRead = await waitForCompletedTransactions(2, in: script)
         XCTAssertTrue(secondRead)
@@ -463,8 +460,7 @@ final class AgentReadMonitorTests: XCTestCase {
 
         monitor.update(panes: [pane(status: .idle, revision: 23)])
 
-        // No message candidate exists, so there is nothing to verify: one
-        // coherent read completes the observation as empty.
+        // A chrome-only screen has no candidate to verify, so one read is enough.
         let completed = await waitForCompletedTransactions(1, in: script)
         XCTAssertTrue(completed)
         await drainMainActor()
@@ -796,9 +792,8 @@ final class AgentReadMonitorTests: XCTestCase {
         XCTAssertEqual(readCallCount, 2)
     }
 
-    /// The policy defaults to enabled with a zero interval so scripted tests
-    /// keep the read-per-snapshot behavior; cadence tests pass an hour to
-    /// observe the suppression side, and preference tests flip enablement.
+    // A zero interval makes every snapshot read, which is what the scripts expect;
+    // cadence tests pass an hour instead to see reads suppressed.
     @MainActor
     private func makeMonitor(
         _ script: ScriptedAgentReads,
@@ -1007,8 +1002,6 @@ final class AgentReadMonitorTests: XCTestCase {
     }
 }
 
-/// Mutable policy holder for tests that flip the excerpt preference between
-/// snapshot ticks.
 @MainActor
 private final class PolicyBox {
     var policy: AgentReadPolicy

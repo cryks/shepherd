@@ -1,81 +1,53 @@
-// Grabber-driven reordering for rows laid out in a vertical run. The Display
-// pane's line list and the Remotes pane's connection list both reorder through
-// this, so the two read the same way: a handle at the row's leading edge is the
-// only thing that starts a drag.
+// Neither list this serves can lean on List's onMove. The Display pane's lines
+// are template text fields, which an NSTableView-backed list takes clicks away
+// from, so they are not in a List at all; the Remotes list is one, but onMove
+// drags a row from anywhere in its body instead of from a handle.
 //
-// Neither list can lean on List's onMove. The Display lines are template text
-// fields, which an NSTableView-backed list takes clicks away from, so they are
-// not in a List at all; the Remotes list is one, but onMove drags a row from
-// anywhere in its body, and a handle is what both lists advertise.
-//
-// The rows stay owned by their container. A drag only produces
-// move(fromOffsets:toOffset:) calls against the array behind them, and the rows
-// move as the pointer passes their neighbours' centers. That live move is the
-// whole feedback: there is no drag image and no insertion indicator.
-//
-// Positions come from the rows themselves, in window coordinates: every row
-// reports its frame there and the pointer arrives in the same space. A named
-// coordinate space would need one container view to hang the name on, which the
-// Display pane's lines do not have — they are loose views in the pane's stack.
-// Nothing in the drag itself scrolls, so the positions it starts from stay where
-// the pointer measures them; a scroll turned mid-drag would move the rows out
-// from under that snapshot.
+// Positions are taken in window coordinates because a named coordinate space
+// needs a container view to hang the name on, which the Display pane's loose
+// lines do not have. Nothing in a drag scrolls, so those positions stay valid
+// for as long as the drag lasts.
 
 import SwiftUI
 
-/// Reorder state for one run of rows.
-///
-/// One instance per run on screen. The Display pane's lines and the copy of
-/// that list inside its per-agent override sheet are separate runs and hold
-/// separate instances, which is what keeps a drag in one from reading the
-/// other's rows.
+// One instance per run of rows on screen: the Display pane's lines and the copy
+// inside its per-agent override sheet must not read each other's rows.
 @MainActor
 @Observable
 final class RowReorder<ID: Hashable> {
-    /// Row the pointer is dragging, nil between drags. The grabbers read it to
-    /// show which one is held.
     private(set) var draggedID: ID?
 
-    /// Where each row sits in window coordinates, as of its last layout. Not
-    /// observed: layout writes it on every pass, and redrawing a list on that
-    /// would re-render the Display pane's template fields under the reader's
-    /// cursor.
+    // Not observed: layout writes it on every pass, and redrawing on that would
+    // re-render the Display pane's template fields under the reader's cursor.
     @ObservationIgnored private var rowFrames: [ID: CGRect] = [:]
 
     @ObservationIgnored private var drag: Drag?
 
-    /// The order and row positions a drag started from, and the slot the row
-    /// has been moved to so far.
-    ///
-    /// The target slot is recomputed from these on every pointer event.
-    /// Comparing against the neighbours' current positions instead would make a
-    /// pointer resting on a boundary swap back and forth, because each swap
-    /// moves the neighbour that the comparison just used.
+    // The target slot is recomputed from the order and positions the drag
+    // started from. Comparing against the neighbours' current positions would
+    // make a pointer resting on a boundary swap back and forth, because each
+    // swap moves the neighbour the comparison just used.
     private struct Drag {
         let order: [ID]
         let frames: [ID: CGRect]
-        /// Index of the dragged row in `order`.
         let origin: Int
         var slot: Int
     }
 
-    /// Records where a row was laid out. Call it from `reorderableRow(_:id:)`
-    /// rather than directly.
     func rowDidLayout(_ frame: CGRect, id: ID) {
         rowFrames[id] = frame
     }
 
-    /// Starts a drag of `id`. `order` must index the same array the `move`
-    /// passed to `dragMoved(to:move:)` applies to.
+    // `order` must index the same array the `move` passed to
+    // `dragMoved(to:move:)` applies to.
     func beginDrag(_ id: ID, in order: [ID]) {
         guard let origin = order.firstIndex(of: id) else { return }
         drag = Drag(order: order, frames: rowFrames, origin: origin, slot: origin)
         draggedID = id
     }
 
-    /// Moves the dragged row to the slot the pointer has reached, `y` being its
-    /// position in window coordinates. `move` runs only when that slot changed,
-    /// so a drag across one boundary is one move.
+    // `y` is in window coordinates. `move` runs only on a slot change, so a
+    // drag across one boundary is one move.
     func dragMoved(to y: CGFloat, move: (IndexSet, Int) -> Void) {
         guard var drag = self.drag else { return }
         let slot = targetSlot(at: y, drag)
@@ -93,9 +65,8 @@ final class RowReorder<ID: Hashable> {
         draggedID = nil
     }
 
-    /// Slot the pointer is over: the number of rows other than the dragged one
-    /// whose center it has passed. A row no layout has reported counts as
-    /// sitting below the pointer, so it leaves the slot where it is.
+    // A row no layout has reported counts as sitting below the pointer, which
+    // leaves the slot where it is.
     private func targetSlot(at y: CGFloat, _ drag: Drag) -> Int {
         drag.order.enumerated()
             .filter { $0.offset != drag.origin }
@@ -104,16 +75,11 @@ final class RowReorder<ID: Hashable> {
     }
 }
 
-/// The handle a row is dragged by, for the leading edge of the row.
-///
-/// Dragging it reorders live; the accessibility actions move the row one slot,
-/// which is the only way to reorder without a pointer.
+// The accessibility actions are the only way to reorder without a pointer.
 struct RowGrabber<ID: Hashable>: View {
     let id: ID
-    /// The rows the drag moves within, in the order `move` indexes.
     let order: [ID]
     let reorder: RowReorder<ID>
-    /// Applies one move to the array behind the rows.
     let move: (IndexSet, Int) -> Void
 
     var body: some View {
@@ -152,9 +118,7 @@ struct RowGrabber<ID: Hashable>: View {
 }
 
 extension View {
-    /// Reports this row's position to `reorder`, which is how a drag tells
-    /// which slot the pointer has reached. Every row of the run needs it, and
-    /// each row needs a `RowGrabber` to be draggable.
+    // Every row of the run needs this; a drag reads nothing but these frames.
     func reorderableRow<ID: Hashable>(_ reorder: RowReorder<ID>, id: ID) -> some View {
         onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
             reorder.rowDidLayout(frame, id: id)

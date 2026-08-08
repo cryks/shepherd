@@ -1,9 +1,5 @@
-// Verifies the HotkeyCombo contract (global-hotkey validity, display order,
-// modifier mapping, key labels) and HotkeySetting persistence. UserDefaults
-// uses a dedicated suite so the tests neither read nor pollute the settings of
-// the machine they run on. Carbon registration itself is not exercised here:
-// GlobalHotkeyCenter talks to the window server, which a test host cannot
-// observe.
+// GlobalHotkeyCenter itself stays untested: RegisterEventHotKey talks to the window
+// server, and a test host cannot observe the result.
 
 import AppKit
 import Carbon.HIToolbox
@@ -68,7 +64,7 @@ final class HotkeySettingTests: XCTestCase {
             HotkeyCombo.carbonModifiers(from: [.command, .shift]),
             UInt32(cmdKey) | UInt32(shiftKey)
         )
-        // fn has no RegisterEventHotKey equivalent and must be dropped.
+        // RegisterEventHotKey has no fn bit, so the flag has to be dropped.
         XCTAssertEqual(HotkeyCombo.carbonModifiers(from: [.function]), 0)
         XCTAssertEqual(HotkeyCombo.carbonModifiers(from: []), 0)
     }
@@ -159,11 +155,12 @@ final class HotkeySettingTests: XCTestCase {
         XCTAssertEqual(changeCount, 3)
     }
 
+    // A per-test suite keeps the machine's own settings out of the results.
     private func makeDefaults() -> UserDefaults {
         let suiteName = "HotkeySettingTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
-        // Pass only the Sendable suiteName to teardown; do not send the UserDefaults
-        // instance across the actor boundary (avoids SendingRisksDataRace).
+        // Rebuild from the Sendable suiteName instead of capturing `defaults`, which
+        // would cross an actor boundary and trip SendingRisksDataRace.
         addTeardownBlock {
             UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
         }

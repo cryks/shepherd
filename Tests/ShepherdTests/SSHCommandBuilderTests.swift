@@ -1,8 +1,3 @@
-// Pins the argv and stdin contract that RemoteTunnel passes to `/usr/bin/ssh`.
-// status feeds a fixed resolver script to the remote `/bin/sh -s`, while the long-lived
-// tunnel closes stdin to `/dev/null`. Covers non-interactive authentication, multiplexing
-// disablement, session grammar, managed binary paths, and stream-local socket delimiting.
-
 import XCTest
 @testable import Shepherd
 
@@ -170,6 +165,8 @@ final class SSHCommandBuilderTests: XCTestCase {
         defer { fixture.remove() }
         let pathBinary = fixture.bin.appendingPathComponent("herdr")
         let managedBinary = fixture.home.appendingPathComponent(".local/bin/herdr")
+        // x10 keeps the supported protocol as a decimal prefix, which a string
+        // compare in the resolver would accept.
         try writeFakeHerdr(
             at: pathBinary,
             protocolVersion: Herdr.supportedProtocol * 10

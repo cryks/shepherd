@@ -1,119 +1,90 @@
-// Types only for the portion of the herdr socket API (protocol 19) JSON that
-// this app reads. session.snapshot's agents elements are received as Pane and
-// its workspaces elements as Workspace; worktree.list's worktrees elements are
-// received as WorktreeEntry. Agent screen monitoring decodes agent.get into
-// HerdrAgentInfo and agent.read into PaneRead.
-// Decoding assumes keyDecodingStrategy = .convertFromSnakeCase, so field names
-// are the JSON's snake_case converted to camelCase. Unknown keys are ignored.
+// Decoding of the herdr socket API (protocol 19) assumes
+// keyDecodingStrategy = .convertFromSnakeCase; unknown keys are ignored.
 //
-// These types hold only what herdr sent, in the fields this app reads; no
-// display text is derived here. Rows and notifications render templates against
-// the verbatim records in HerdrRawSnapshot, so a field that exists only to be
-// shown belongs there, not on Pane or Workspace.
+// These types hold only the fields the app reasons about. A field that exists
+// only to be displayed belongs in HerdrRawSnapshot, which the templates address
+// by the names herdr wrote.
 
 import Foundation
 
-/// Agent status herdr reports per pane.
-/// idle and done are the same underlying "waiting" state; done applies only
-/// while the completion result is unviewed in herdr. Viewing the pane in herdr
-/// turns done back to idle, so this app keeps no read/unread tracking of its own.
+// idle and done are the same underlying waiting state; done lasts only while the
+// result is unviewed in herdr, which flips it back to idle on its own.
 enum AgentStatus: String, Codable, Sendable {
     case idle, working, blocked, done, unknown
 
-    /// A status herdr adds in a future protocol decodes as unknown instead of
-    /// failing the whole snapshot, so optimistic monitoring across protocol
-    /// bumps keeps every pane visible.
+    // A status added in a future protocol must not fail the whole snapshot, so
+    // optimistic monitoring keeps every pane visible across protocol bumps.
     init(from decoder: any Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
         self = AgentStatus(rawValue: raw) ?? .unknown
     }
 }
 
-/// An agents element of session.snapshot.
-/// A pane with agent == nil is not an agent pane (a plain shell, etc.).
+// An agents element of session.snapshot.
 struct Pane: Codable, Identifiable, Equatable {
-    /// Detected agent name (claude, codex, ...). nil means not a watch target.
+    // nil for a pane herdr detected no agent in (a plain shell, etc.).
     var agent: String?
     var agentStatus: AgentStatus
     var paneId: String
     var workspaceId: String
-    /// Stable identity across pane moves. AttentionMonitor uses it to correlate
-    /// observations and notification IDs; protocol 19 agent methods reject
-    /// terminal IDs, so LocalAgentFocus targets the current paneId instead.
+    // Stable across pane moves, so AttentionMonitor correlates observations by
+    // it. Protocol 19 agent methods reject terminal IDs, so calls still target
+    // paneId.
     var terminalId: String?
-    /// Pane revision from session.snapshot. It is optional in Shepherd's model
-    /// so synthetic and older cached fixtures can omit it; protocol 19 supplies
-    /// it for live agents. Herdr does not advance it for every terminal write,
-    /// so AgentReadMonitor uses each successful snapshot as a read opportunity.
+    // Optional so synthetic and older cached fixtures can omit it. Herdr does
+    // not advance it for every terminal write, so it cannot be used alone to
+    // decide whether a screen read is needed.
     var revision: UInt64? = nil
-    /// Rows the terminal viewport sits above the newest buffer row; 0 when the
-    /// view is pinned to the tail. session.snapshot reports scroll only in its
-    /// panes records, so decoding an agents record leaves this nil;
-    /// HerdrSessionSnapshot.agentsWithScroll() fills it for AgentReadMonitor,
-    /// while display snapshots keep it nil so scroll movement alone cannot
-    /// make consecutive snapshots unequal.
+    // Only the panes records report scroll, so an agents record decodes this as
+    // nil. agentsWithScroll() fills it for AgentReadMonitor while display
+    // snapshots keep it nil, so scrolling alone cannot make two snapshots
+    // unequal.
     var scrollOffsetFromBottom: Int? = nil
-    /// Terminal title with decorations like spinners stripped. Used to show the
-    /// agent's current work.
+    // Terminal title with decorations such as spinners already stripped.
     var terminalTitleStripped: String?
-    /// herdr metadata describing the pane's origin and similar. May be nil at
-    /// pane.created time and in the snapshot right after agent detection; a
-    /// subsequent poll fills it in.
+    // May be nil at pane.created time and in the snapshot right after agent
+    // detection; a later poll fills it in.
     var tokens: PaneTokens?
 
     var id: String { paneId }
 }
 
-/// A panes element of session.snapshot. The panes records describe every
-/// terminal pane, agent or not; Shepherd reads only the identity and viewport
-/// scroll state here. Agent identity and status stay in the agents records
-/// that decode into Pane.
+// A panes element of session.snapshot. These records cover every terminal pane,
+// agent or not; agent identity and status stay in the agents records.
 struct SnapshotPane: Codable, Equatable {
     var paneId: String
-    /// nil when herdr does not report scroll for this pane; treated as a
-    /// viewport pinned to the tail.
+    // nil when herdr reports no scroll for the pane, which means the tail.
     var scroll: PaneScroll?
 }
 
-/// Viewport scroll state of one pane.
 struct PaneScroll: Codable, Equatable {
-    /// Rows the viewport sits above the newest buffer row; 0 at the tail.
+    // 0 at the tail.
     var offsetFromBottom: Int
 }
 
-/// The portion of the metadata herdr attaches to a pane that Shepherd reads.
-/// agent_kind is kept as String so the whole pane still decodes when values are
-/// added in the future.
 struct PaneTokens: Codable, Equatable {
-    /// The pane's origin. `"subagent"` for subagents; nil when metadata is
-    /// missing or herdr does not classify the pane's origin.
+    // Kept as String, not an enum, so a value added later still decodes.
+    // `"subagent"` marks a subagent pane.
     var agentKind: String?
 }
 
-/// A workspaces element of session.snapshot. Used for the monitor window's
-/// group headings and ordering.
 struct Workspace: Codable, Identifiable, Equatable {
     var workspaceId: String
     var label: String?
-    /// Display number in the herdr UI. Used for group ordering.
+    // Display number in the herdr UI, which also orders the groups here.
     var number: Int
-    /// Present only when the workspace opens a git checkout; nil for non-git
-    /// workspaces.
+    // nil for a workspace that opens no git checkout.
     var worktree: WorkspaceWorktree? = nil
 
     var id: String { workspaceId }
 }
 
-/// The portion of the worktree metadata on a session.snapshot workspace that is
-/// read. Used to correlate workspaces that opened the same repo.
 struct WorkspaceWorktree: Codable, Equatable {
-    /// The repo root's .git path. Same value for the root checkout and linked
-    /// worktrees, serving as the key that merges linked-worktree panes into the
-    /// root checkout's group.
+    // The repo root's .git path. Identical for the root checkout and its linked
+    // worktrees, which is what merges their panes into one group.
     var repoKey: String
-    /// true for a checkout created with `git worktree add`. false for the repo
-    /// root's checkout, which becomes the merge target for linked worktrees in
-    /// the monitor list.
+    // true for a checkout made with `git worktree add`; the false side is the
+    // merge target.
     var isLinkedWorktree: Bool
 }
 
@@ -124,24 +95,18 @@ struct RPCError: Codable, Error {
     var message: String
 }
 
-/// Response line of a one-shot RPC. result and error are mutually exclusive.
+// result and error are mutually exclusive.
 struct RPCResponse<R: Codable>: Codable {
     var id: String?
     var result: R?
     var error: RPCError?
 }
 
-/// Bootstrap payload returned by `session.snapshot`. Shepherd reads not every
-/// pane but only rows detected as agents, plus the workspaces needed for their
-/// group headings.
-/// version and protocol come in the same fetch result, so no separate ping RPC
-/// is inserted.
 struct HerdrSessionSnapshot: Codable {
     var version: String
     var protocolVersion: Int
     var agents: [Pane]
     var workspaces: [Workspace]
-    /// The panes records of the same capture, read only for viewport scroll.
     var panes: [SnapshotPane]? = nil
 
     enum CodingKeys: String, CodingKey {
@@ -152,10 +117,9 @@ struct HerdrSessionSnapshot: Codable {
         case panes
     }
 
-    /// agents with each pane's viewport scroll offset joined by pane_id from
-    /// the panes records. The join is a separate step rather than part of
-    /// decoding because only AgentReadMonitor consumes the joined form; the
-    /// published display snapshot keeps the plain agents.
+    // Joining scroll offsets is a separate step rather than part of decoding
+    // because only AgentReadMonitor wants them; the published snapshot must keep
+    // agents free of scroll state.
     func agentsWithScroll() -> [Pane] {
         let offsets: [String: Int] = Dictionary(
             (panes ?? []).compactMap { record in
@@ -172,76 +136,61 @@ struct HerdrSessionSnapshot: Codable {
     }
 }
 
-/// The result of `session.snapshot` wraps the type name and the snapshot body
-/// one level deep. The unused `type` is ignored by the decoder, and only the
-/// snapshot body is passed to Store.
 struct SessionSnapshotResult: Codable {
     var snapshot: HerdrSessionSnapshot
 }
 
-/// Result of `worktree.list`. Returns the checkout list of the repo that the
-/// workspace_id in params belongs to. Shepherd reads only what it needs to show
-/// branch names.
+// Result of `worktree.list`: the checkouts of the repo that the requested
+// workspace_id belongs to.
 struct WorktreeListResult: Codable {
     var worktrees: [WorktreeEntry]
 }
 
-/// A worktrees element of worktree.list. Includes both the root checkout and
-/// linked worktrees.
 struct WorktreeEntry: Codable {
-    /// Name of the checked-out branch. nil for detached HEAD.
+    // nil for detached HEAD.
     var branch: String?
-    /// ID of the workspace that has this checkout open. nil if no workspace has
-    /// it open.
+    // nil when no workspace has this checkout open.
     var openWorkspaceId: String?
 }
 
-/// For RPCs whose result body is not read (agent.focus, etc.).
+// For RPCs whose result body is not read (agent.focus, etc.).
 struct EmptyResult: Codable {}
 
 // MARK: - Agent screen reads
 
-/// The native session reference Herdr associates with the current agent
-/// occupant. The whole value participates in occupant identity: a terminal may
-/// keep its terminal ID while the agent process starts a different native
-/// session.
+// The whole value takes part in occupant identity: a terminal can keep its
+// terminal ID while the agent process starts a different native session.
 struct HerdrAgentSession: Codable, Equatable, Sendable {
-    /// Representation used for `value`. Protocol 19 supports either a native
-    /// session ID or a session path.
+    // Protocol 19 reports either a native session ID or a session path.
     enum Kind: String, Codable, Sendable {
         case id
         case path
     }
 
-    /// Authority that reported the native session, such as `herdr:codex`.
+    // Authority that reported the session, such as `herdr:codex`.
     var source: String
-    /// Canonical agent label belonging to the reported session.
     var agent: String
     var kind: Kind
     var value: String
 }
 
-/// The protocol 19 subset of `AgentInfo` needed to bracket an `agent.read`.
-/// Callers compare values returned before and after a screen read so a status
-/// transition or occupant replacement cannot be presented as one coherent
-/// observation.
+// The protocol 19 subset of `AgentInfo` needed to bracket an `agent.read`:
+// callers compare the values before and after the read so a status transition or
+// an occupant swap cannot be presented as one coherent observation.
 struct HerdrAgentInfo: Codable, Equatable, Sendable {
-    /// Canonical agent label. The protocol schema permits null even though
-    /// `agent.get` resolves only panes that currently have agent identity.
+    // Optional because the protocol schema permits null, even though `agent.get`
+    // resolves only panes that currently have agent identity.
     var agent: String?
     var agentStatus: AgentStatus
     var paneId: String
     var workspaceId: String
     var tabId: String
-    /// Stable terminal identity across pane moves.
     var terminalId: String
-    /// Pane presentation and metadata revision captured by `agent.get`.
     var revision: UInt64
-    /// Monotonic sequence for semantic agent-state transitions. Herdr omits the
-    /// field when no transition has been recorded, which decodes as zero.
+    // Monotonic sequence of semantic agent-state transitions.
     var stateChangeSeq: UInt64
-    /// Native agent session identity when an official integration has reported
-    /// one. It is absent for screen-detected sessions.
+    // Absent for screen-detected sessions; present only when an official
+    // integration reported one.
     var agentSession: HerdrAgentSession?
 
     private enum CodingKeys: String, CodingKey {
@@ -287,17 +236,16 @@ struct HerdrAgentInfo: Codable, Equatable, Sendable {
         tabId = try container.decode(String.self, forKey: .tabId)
         terminalId = try container.decode(String.self, forKey: .terminalId)
         revision = try container.decode(UInt64.self, forKey: .revision)
+        // Herdr omits the field until a transition is recorded.
         stateChangeSeq = try container.decodeIfPresent(UInt64.self, forKey: .stateChangeSeq) ?? 0
         agentSession = try container.decodeIfPresent(HerdrAgentSession.self, forKey: .agentSession)
     }
 }
 
-/// Result body returned by `agent.get`.
 struct AgentGetResult: Codable, Equatable, Sendable {
     var agent: HerdrAgentInfo
 }
 
-/// Plain terminal data returned inside the protocol's `pane_read` result.
 struct PaneRead: Codable, Equatable, Sendable {
     enum Source: String, Codable, Sendable {
         case visible
@@ -317,14 +265,13 @@ struct PaneRead: Codable, Equatable, Sendable {
     var source: Source
     var format: Format
     var text: String
-    /// Protocol revision field returned with `text`. Herdr 0.8.0 hard-codes zero
-    /// for every source, and protocol 19 defines no correlation with AgentInfo.
+    // Unusable for correlation: herdr 0.8.0 hard-codes zero for every source,
+    // and protocol 19 defines no relation to AgentInfo.revision.
     var revision: UInt64
-    /// True when Herdr omitted bytes because its response limit was reached.
+    // True when herdr dropped bytes at its response limit.
     var truncated: Bool
 }
 
-/// Result body returned by `agent.read`.
 struct AgentReadResult: Codable, Equatable, Sendable {
     var read: PaneRead
 }

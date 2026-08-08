@@ -1,33 +1,9 @@
-// The Display settings tab: an editor for RowLayout — the agent row's lines,
-// the per-agent replacements of that list, and the notification templates —
-// beside a preview of the rows those templates produce.
-//
-// This pane is the only writer of RowLayoutSetting.shared.layout and the only
-// place that reports variable names no resolver knows. It owns no herdr state:
-// live records are read through FleetStore for the insertion menu's current
-// values and for the Live preview, and the fixed sample comes from
-// RowLayoutPreviewSample.
-//
-// The editor is one scrolling column beside the preview. The split is fixed:
-// the preview keeps a constant width and the editor takes the rest, so
-// widening the window widens the template fields. Template fields sit directly
-// in the scroll view, not in a List: an NSTableView-backed list takes clicks
-// for row handling before its field editor, which reads as text fields that
-// ignore the click. Lines reorder through RowReorder, the same grabber drag the
-// Remotes pane uses.
-//
-// Insertion into a template field targets the caret. While the field owns the
-// window's field editor the edit goes through NSTextView, which keeps undo and
-// the typing selection; once a menu popup has taken first responder away, the
-// last caret the field saw is used to splice the source string instead.
-
 import AppKit
 import SwiftUI
 
-/// Extra trailing inset for this pane's scrolling columns. An always-visible
-/// (legacy) scroller draws over the content's trailing edge rather than beside
-/// it, and without this inset it sits on the controls at that edge. Overlay
-/// scrollers appear over the same gap only while scrolling and need none.
+// A legacy (always-visible) scroller draws over the content's trailing edge
+// rather than beside it, so it would sit on the controls there. Overlay
+// scrollers need no inset.
 @MainActor
 private var legacyScrollerInset: CGFloat {
     guard NSScroller.preferredScrollerStyle == .legacy else { return 0 }
@@ -38,16 +14,15 @@ private var legacyScrollerInset: CGFloat {
 struct DisplaySettingsView: View {
     let store: FleetStore
 
-    /// Width of the preview column. Sized for a menu-width row (MenuPanel lays
-    /// rows at 340pt) plus the card and column insets around it.
+    // Sized for a menu-width row (MenuPanel lays rows at 340pt) plus the card
+    // and column insets around it.
     private static let previewColumnWidth: CGFloat = 320
 
     @Bindable private var layoutSetting = RowLayoutSetting.shared
     @AppStorage(colorAgentIconsKey) private var colorAgentIcons = false
-    /// Sampled when the tab appears rather than read during body evaluation: the
-    /// catalog is built from snapshots that change on every poll, and observing
-    /// them here would rebuild the whole editor — text fields included — twice a
-    /// second while someone is typing in it.
+    // Sampled on appear instead of read during body evaluation: the catalog
+    // comes from snapshots that change on every poll, so observing it here
+    // would rebuild the editor, text fields included, twice a second.
     @State private var catalog = TemplateVariableCatalog.empty
     @State private var overrideEditor: AgentOverrideEditorContext?
     @State private var overrideRemovalCandidate: String?
@@ -62,11 +37,10 @@ struct DisplaySettingsView: View {
         }
         .onAppear {
             catalog = TemplateVariableCatalog(store: store)
-            // Ordering the window front, and selecting this tab, both leave
-            // AppKit's first-responder choice on the first template field,
-            // opening the pane with a template selected. defaultFocus is
-            // ignored in a Settings scene, so the choice is undone one runloop
-            // turn later, after the turn that made it.
+            // AppKit makes the first template field the initial first
+            // responder when the window comes front or this tab is selected.
+            // defaultFocus is ignored in a Settings scene, so the choice is
+            // undone one runloop turn after the turn that made it.
             DispatchQueue.main.async { NSApp.keyWindow?.makeFirstResponder(nil) }
         }
         .sheet(item: $overrideEditor) { context in
@@ -121,6 +95,9 @@ struct DisplaySettingsView: View {
 
     // MARK: - Editor column
 
+    // Fields sit in a ScrollView, not a List: an NSTableView-backed list takes
+    // clicks for row handling before its field editor sees them, which reads
+    // as text fields that ignore the click.
     private func editor(catalog: TemplateVariableCatalog) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -180,9 +157,6 @@ struct DisplaySettingsView: View {
         .frame(maxWidth: .infinity)
     }
 
-    /// One titled section of the editor column: a header row holding the title
-    /// and its Restore Defaults link, the carded content, and a caption footer.
-    /// The card is the same quinary rounded surface the preview column uses.
     private func editorSection(
         _ title: String,
         restore: RestoreTarget? = nil,
@@ -279,7 +253,6 @@ struct DisplaySettingsView: View {
     }
 }
 
-/// Which part of the layout a pending "Restore Defaults" confirmation covers.
 private enum RestoreTarget: String, Identifiable {
     case rows
     case overrides
@@ -313,8 +286,6 @@ private enum RestoreTarget: String, Identifiable {
 
 // MARK: - Line list
 
-/// The editable line list: one editor per line, dragged by its grabber into
-/// another position, plus the button that appends a line.
 private struct RowLineList: View {
     @Binding var lines: [RowLine]
     let catalog: TemplateVariableCatalog
@@ -356,10 +327,6 @@ private struct RowLineList: View {
     }
 }
 
-/// One line: the grabber it is dragged by, its left and right template with a
-/// style each, the stepper for how many lines the left side may wrap across,
-/// and the button that removes it. A line whose two sides both render empty is
-/// dropped by the row itself, so there is nothing to warn about here.
 private struct RowLineEditor: View {
     @Binding var line: RowLine
     let grabber: RowGrabber<UUID>
@@ -370,8 +337,8 @@ private struct RowLineEditor: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            // Stretched over both template rows: the grabber stands for the
-            // whole line, and the strip is what a drag has to hit.
+            // The grabber drags the whole line, so its hit strip spans both
+            // template rows.
             grabber
                 .frame(maxHeight: .infinity)
 
@@ -388,8 +355,8 @@ private struct RowLineEditor: View {
                 )
             }
 
-            // Five lines outruns the 240-character excerpt cap at menu width,
-            // so a larger count would only reserve blank height.
+            // Five lines already outruns the 240-character excerpt cap at menu
+            // width, so a larger count would only reserve blank height.
             Stepper(value: $line.maxLines, in: 1...5) {
                 Text(lineCountLabel)
             }
@@ -450,10 +417,6 @@ extension RowTextStyle {
 
 // MARK: - Notification body
 
-/// The notification body's lines: one template each, dragged into another order
-/// by the same grabber the row list uses, plus the button that appends a line.
-/// The label sits on the first line so it lines up with the Title and Subtitle
-/// labels above; the lines themselves are indented by their grabber column.
 private struct NotificationBodyList: View {
     @Binding var lines: [NotificationLine]
     let labelWidth: CGFloat
@@ -466,6 +429,8 @@ private struct NotificationBodyList: View {
     var body: some View {
         ForEach($lines) { $line in
             HStack(spacing: 6) {
+                // Only the first line carries the label, to line up with the
+                // Title and Subtitle labels above.
                 Text(line.id == lines.first?.id ? label : "")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -508,23 +473,18 @@ private struct NotificationBodyList: View {
 
 // MARK: - Template field
 
-/// One template text field with its variable-insertion menu and the inline list
-/// of names no resolver knows.
 private struct TemplateField: View {
-    /// Names the field for the text field's placeholder and for assistive
-    /// technology, whether or not it is drawn.
     let label: String
-    /// Width of the leading label column. nil draws no label, for a field whose
-    /// caller has put the label somewhere else in the row.
+    // nil draws no label, for a field whose caller places the label elsewhere
+    // in the row.
     let labelWidth: CGFloat?
     @Binding var template: RowTemplate
     let catalog: TemplateVariableCatalog
 
     @FocusState private var isFocused: Bool
-    /// UTF-16 offset of the caret as of the last text, focus, or selection
-    /// change; nil until the field has been focused once, in which case an
-    /// insertion appends. A reference type: the caret moves on every keystroke
-    /// and click, and recording it must not re-render the field.
+    // UTF-16 caret offset; nil until the field has been focused once, in which
+    // case an insertion appends. A reference type because the caret moves on
+    // every keystroke and click, and recording it must not re-render the field.
     private final class CaretBox {
         var location: Int?
     }
@@ -568,9 +528,9 @@ private struct TemplateField: View {
         }
         .onChange(of: template) { rememberCaret() }
         .onChange(of: isFocused) { if isFocused { rememberCaret() } }
-        // A click or an arrow key moves the caret without changing the text, and
-        // the field editor posts this for every such move. Without it, insertion
-        // would fall back to wherever the caret last happened to be recorded.
+        // A click or an arrow key moves the caret without changing the text;
+        // the field editor posts this for every such move. Without it, an
+        // insertion would land wherever the caret was last recorded.
         .onReceive(NotificationCenter.default.publisher(for: NSTextView.didChangeSelectionNotification)) { _ in
             rememberCaret()
         }
@@ -580,11 +540,10 @@ private struct TemplateField: View {
         catalog.unknownNames(in: template)
     }
 
-    /// Builds the insertion menu at click time, not during body evaluation:
-    /// every field carrying a built menu of every variable made tab switches
-    /// and each keystroke pay for menus nobody had opened. An NSMenu also
-    /// leaves the window's first responder alone, so insertion after picking
-    /// an entry usually takes the caret-preserving field-editor path.
+    // Built at click time, not during body evaluation: a menu per field made
+    // tab switches and keystrokes pay for menus nobody opened. An NSMenu also
+    // leaves the window's first responder alone, so insertion afterwards
+    // usually takes the caret-preserving field-editor path.
     private func presentVariableMenu() {
         let menu = NSMenu()
         for group in catalog.groups {
@@ -601,14 +560,10 @@ private struct TemplateField: View {
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }
 
-    /// Inserts `{name}` at the caret.
-    ///
-    /// The field editor path is tried first: it is the same edit a keystroke
-    /// would make, so undo and the selection survive. It is unavailable once the
-    /// menu popup has taken first responder, and then the source string is
-    /// spliced at the last caret this field saw and the selection is put back on
-    /// the next runloop turn, after SwiftUI has pushed the new text into the
-    /// field editor.
+    // The field editor path is tried first because it is the same edit a
+    // keystroke would make, so undo and the selection survive. It is
+    // unavailable once a menu popup has taken first responder, and the string
+    // is spliced at the last known caret instead.
     private func insert(_ name: String) {
         let snippet = "{\(name)}"
         if isFocused, let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
@@ -630,6 +585,8 @@ private struct TemplateField: View {
         let restored = NSRange(location: offset + snippet.utf16.count, length: 0)
         caret.location = restored.location
         isFocused = true
+        // One turn later, after SwiftUI has pushed the new text into the field
+        // editor; setting the range before that loses it.
         DispatchQueue.main.async {
             (NSApp.keyWindow?.firstResponder as? NSTextView)?.setSelectedRange(restored)
         }
@@ -650,8 +607,8 @@ private struct TemplateField: View {
     }
 }
 
-/// Menu item carrying its action as a closure. The item is its own target, so
-/// the closure lives exactly as long as the menu holding it.
+// The item is its own target, so the closure lives exactly as long as the menu
+// holding it.
 private final class InsertionMenuItem: NSMenuItem {
     private let handler: () -> Void
 
@@ -674,11 +631,9 @@ private final class InsertionMenuItem: NSMenuItem {
 
 private struct AgentOverrideEditorContext: Identifiable {
     let id = UUID()
-    /// herdr's agent id (claude, codex, ...). Empty while adding.
+    // herdr's agent id (claude, codex, ...). Empty while adding.
     let agent: String
     let lines: [RowLine]
-    /// Adding rather than editing: the agent id is editable and checked against
-    /// the ids already overridden.
     let isNew: Bool
 }
 
@@ -781,21 +736,12 @@ private struct AgentOverrideEditor: View {
 
 // MARK: - Variable catalog
 
-/// The variable names the insertion menu offers and the unknown-name check
-/// treats as defined, each with the value it currently resolves to where one is
-/// available.
-///
-/// The two namespaces are checked differently. The Shepherd names are a closed
-/// set. A `herdr.<scope>.<path>` name addresses a field of a record, and herdr
-/// keeps adding fields, so a path counts as defined when it is one of the
-/// documented fields, sits under `tokens.` (those keys come from hooks and are
-/// legitimately absent), or resolves in a record a live agent reports right now.
 @MainActor
 struct TemplateVariableCatalog {
     struct Entry: Identifiable {
         let name: String
-        /// Value from the representative live record, absent when no agent is
-        /// being monitored or the field is not a herdr record field.
+        // Absent when no agent is monitored, or when the name is not a herdr
+        // record field.
         let value: String?
 
         var id: String { name }
@@ -819,11 +765,8 @@ struct TemplateVariableCatalog {
     private let workspaceRecords: [JSONValue]
     private let tabRecords: [JSONValue]
 
-    /// The documented names with no values, for use before any snapshot has
-    /// been sampled.
     static let empty = TemplateVariableCatalog()
 
-    /// Builds the catalog from every source currently ready.
     init(store: FleetStore) {
         // Records arrive in dictionaries, so they are ordered by id to keep the
         // representative record and the token key list stable.
@@ -838,11 +781,9 @@ struct TemplateVariableCatalog {
         )
     }
 
-    /// Builds the catalog over the given records. Menu values come from one
-    /// representative pane — the focused one if herdr reports one, else the
-    /// lowest pane id — so the menu shows a coherent record rather than a mix of
-    /// fields from different agents. With no records the names are still listed,
-    /// without values.
+    // Menu values come from one representative pane — the focused one, else the
+    // lowest pane id — so the menu shows a coherent record rather than a mix of
+    // fields from different agents.
     init(agents: [JSONValue] = [], workspaces: [JSONValue] = [], tabs: [JSONValue] = []) {
         agentRecords = agents
         workspaceRecords = workspaces
@@ -893,9 +834,7 @@ struct TemplateVariableCatalog {
         groups = built
     }
 
-    /// Names referenced by `template` that no resolver defines, deduplicated and
-    /// in source order, each wrapped in braces so the message reads like the
-    /// text the user typed.
+    // Names come back in braces so the warning shows them as they were typed.
     func unknownNames(in template: RowTemplate) -> [String] {
         var seen: Set<String> = []
         var unknown: [String] = []
@@ -906,6 +845,10 @@ struct TemplateVariableCatalog {
         return unknown
     }
 
+    // Shepherd names are a closed set, but herdr keeps adding record fields, so
+    // a herdr path also counts as defined when a live record resolves it.
+    // Agent and workspace token keys come from hooks and are legitimately
+    // absent, so they are accepted without a record; tabs carry no tokens.
     private func isDefined(_ name: String) -> Bool {
         if Self.shepherdNames.contains(name) { return true }
         guard let (scope, path) = Self.split(name) else { return false }
@@ -929,9 +872,6 @@ struct TemplateVariableCatalog {
         case tab
     }
 
-    /// Splits `herdr.<scope>.<path>` into its scope and the remaining dotted
-    /// path. Anything else — another prefix, an unknown scope, no path — is not
-    /// a herdr name and is reported as unknown.
     private static func split(_ name: String) -> (Scope, String)? {
         let parts = name.split(separator: ".", maxSplits: 2, omittingEmptySubsequences: false)
         guard parts.count == 3,
@@ -993,9 +933,8 @@ struct TemplateVariableCatalog {
         "number",
     ]
 
-    /// Token keys live agents and their workspaces report right now. They are
-    /// defined by hooks, so they exist only as long as something reports them
-    /// and cannot be listed ahead of time.
+    // Token keys are defined by hooks, so they exist only while something
+    // reports them and cannot be listed ahead of time.
     private static func tokenEntries(
         agents: [JSONValue],
         workspaces: [JSONValue]
@@ -1017,8 +956,7 @@ struct TemplateVariableCatalog {
             + keyed(workspaces, prefix: "herdr.workspace.tokens.")
     }
 
-    /// Keeps a menu entry to one readable line; long values (a title, a path)
-    /// would otherwise stretch the popup across the screen.
+    // A long value (a title, a path) would stretch the popup across the screen.
     private static func abbreviated(_ text: String) -> String {
         let limit = 42
         guard text.count > limit else { return text }
@@ -1028,9 +966,6 @@ struct TemplateVariableCatalog {
 
 // MARK: - Preview column
 
-/// The rows the current templates produce, on the fixed sample or on the agents
-/// being monitored. Rows are built with `onFocus: nil`, which is the same static,
-/// non-hovering row a remote gets in the menu.
 private struct RowLayoutPreviewColumn: View {
     let store: FleetStore
 
@@ -1114,10 +1049,9 @@ private struct RowLayoutPreviewColumn: View {
         }
     }
 
-    /// The AgentRow the menu draws, minus interaction: `onFocus: nil` is what a
-    /// remote row gets, so the preview never highlights on hover. The excerpt
-    /// line is reserved as the menu reserves it, which is the surface these
-    /// templates are tuned against.
+    // `onFocus: nil` is what a remote row gets, so the preview never highlights
+    // on hover. The excerpt line is reserved as the menu reserves it, since the
+    // menu is the surface these templates are tuned against.
     private func row(context: AgentRowContext, excerptState: AgentExcerptState?) -> some View {
         AgentRow(
             context: context,
@@ -1144,14 +1078,13 @@ private struct RowLayoutPreviewColumn: View {
         let paneIDs: [SourcePaneID]
     }
 
-    /// One entry per ready source that has agents, in the order the menu lists
-    /// them. Only the ids are carried; the row context is read per row so the
-    /// preview follows the endpoint's current snapshot.
+    // Only ids are carried; the row context is read per row so the preview
+    // follows the endpoint's current snapshot.
     private var liveSections: [LiveSection] {
         store.sourceSections.compactMap { section -> LiveSection? in
             guard let source = section.source, source.availableSnapshot != nil else { return nil }
-            // workspaceGroups is herdr's display order, so the preview lists
-            // panes exactly as the menu does.
+            // workspaceGroups carries herdr's display order, so the preview
+            // lists panes exactly as the menu does.
             let panes = source.workspaceGroups.flatMap { $0.panes }
             guard !panes.isEmpty else { return nil }
             return LiveSection(

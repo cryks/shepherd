@@ -1,19 +1,12 @@
-// Panel opened by clicking the menu bar item (MenuBarExtra's .window style).
-// NSMenu cannot render multi-line items, so a SwiftUI view is presented
-// directly instead of a native menu. The same AgentRow as the monitor window
-// is laid out, separated by endpoint and workspace headers, with action items
-// styled after NSMenu items (open/close the monitor window, settings, quit) at
-// the bottom. MenuBarExtra manages opening and closing the panel itself; here
-// the panel is closed explicitly via dismiss after actions such as a row click.
+// NSMenu cannot render multi-line items, so the menu bar item presents this
+// SwiftUI view through MenuBarExtra's .window style instead of a native menu.
 
 import AppKit
 import SwiftUI
 
 struct MenuPanel: View {
     @Bindable var store: FleetStore
-    /// Sparkle bridge for the "Check for Updates…" item. nil only in headless
-    /// screenshot rendering (ScreenshotRenderer), which never starts Sparkle;
-    /// the item then draws enabled and its action does nothing.
+    // nil only under headless screenshot rendering, which never starts Sparkle.
     let updater: UpdaterModel?
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
@@ -75,31 +68,19 @@ struct MenuPanel: View {
         })
     }
 
-    /// Measured list height. MenuBarExtra's window sizes the panel from the
-    /// view's ideal size, but a ScrollView has no ideal height and collapses to
-    /// 0, so the content's actual size is measured and given to the ScrollView
-    /// as its height (scrolling once the cap is exceeded). The frame uses a
-    /// 56pt bootstrap height only until this becomes nonzero; keeping that
-    /// minimum after measurement leaves blank space below short empty states.
+    // MenuBarExtra sizes its panel from the view's ideal size, but a ScrollView
+    // has none and collapses to 0, so the content is measured and fed back as
+    // an explicit height. The 56pt fallback applies only before the first
+    // measurement; keeping it afterwards would pad short empty states.
     @State private var listHeight: CGFloat = 0
 
-    /// Maximum height the whole panel can take: the distance from the panel's
-    /// top edge (just below the menu bar) to the bottom of screen.visibleFrame
-    /// (the screen's bottom edge excluding the Dock), measured from the NSWindow
-    /// by PanelMaxHeightReader. nil during the first layout before the view is
-    /// attached to a window.
+    // nil during the first layout, before the view is attached to a window.
     @State private var panelMaxHeight: CGFloat?
 
-    /// Measured height of everything but the list (divider + footer). What
-    /// remains after subtracting this from the panel's maximum height is
-    /// allocated to the list.
     @State private var chromeHeight: CGFloat = 0
 
-    /// Height cap for the list. The list grows until the panel reaches the
-    /// bottom of the screen; whatever still does not fit is left to the
-    /// ScrollView's scrolling. Until the panel's maximum height has been
-    /// measured, the first layout opens with a conservative fixed value that
-    /// stays on screen (replaced by the measured value right after display).
+    // 440 is a conservative on-screen guess used for the single layout pass
+    // before the window is measured.
     private var maxListHeight: CGFloat {
         guard let panelMaxHeight else { return 440 }
         return max(panelMaxHeight - chromeHeight, 56)
@@ -125,7 +106,7 @@ struct MenuPanel: View {
                     dismissWindow(id: monitorWindowId)
                 } else {
                     openWindow(id: monitorWindowId)
-                    // An LSUIElement app does not come to the front when it opens a window, so activate explicitly.
+                    // An LSUIElement app does not come to the front by itself.
                     NSApp.activate()
                 }
                 dismiss()
@@ -133,7 +114,7 @@ struct MenuPanel: View {
             MenuSeparator()
             MenuItem(tr("Settings…", ja: "設定…")) {
                 openSettings()
-                // An LSUIElement app does not come to the front when it opens a window, so activate explicitly.
+                // An LSUIElement app does not come to the front by itself.
                 NSApp.activate()
                 dismiss()
             }
@@ -142,14 +123,14 @@ struct MenuPanel: View {
                 isEnabled: updater?.canCheckForUpdates ?? true
             ) {
                 updater?.checkForUpdates()
-                // Sparkle presents its update window in this LSUIElement app, so activate explicitly.
+                // Sparkle's own window needs the same explicit activation.
                 NSApp.activate()
                 dismiss()
             }
             MenuSeparator()
             MenuItem(tr("About Shepherd", ja: "Shepherd について")) {
                 openWindow(id: aboutWindowId)
-                // An LSUIElement app does not come to the front when it opens a window, so activate explicitly.
+                // An LSUIElement app does not come to the front by itself.
                 NSApp.activate()
                 dismiss()
             }
@@ -158,18 +139,15 @@ struct MenuPanel: View {
                 NSApp.terminate(nil)
             }
         }
-        // Each MenuItem carries its own horizontal padding as the highlight
-        // inset (only vertical padding is applied here so the MenuSeparator can
-        // span the full panel width).
+        // Horizontal padding belongs to each MenuItem as its highlight inset,
+        // so that MenuSeparator can still span the full panel width.
         .padding(.vertical, 5)
     }
 }
 
-/// Opens or closes the MenuBarExtra panel from the global hotkey. SwiftUI has
-/// no programmatic MenuBarExtra presentation API (as of macOS 26), so this
-/// walks the app's windows for the status item's NSStatusBarButton — the
-/// button hosting MenuBarIcon — and clicks it. performClick on the button of
-/// an already-open panel closes it, so the single code path is the toggle.
+// SwiftUI has no programmatic MenuBarExtra presentation API (as of macOS 26),
+// so the hotkey clicks the status item button. performClick on an open panel
+// closes it, which makes this one path a toggle.
 @MainActor
 enum MenuBarPanelToggler {
     static func toggle() {
@@ -182,9 +160,8 @@ enum MenuBarPanelToggler {
         }
     }
 
-    /// Depth-first search for the status item button. NSApp.windows only
-    /// contains this process's windows, and Shepherd has a single MenuBarExtra,
-    /// so the first hit is the right one.
+    // NSApp.windows holds only this process's windows and Shepherd has a single
+    // MenuBarExtra, so the first hit is the right button.
     private static func statusBarButton(under view: NSView?) -> NSStatusBarButton? {
         guard let view else { return nil }
         if let button = view as? NSStatusBarButton { return button }
@@ -195,20 +172,11 @@ enum MenuBarPanelToggler {
     }
 }
 
-/// Button styled after an NSMenu item. The panel uses the .window style and
-/// cannot use NSMenu, so the hover appearance is matched to the native menu's
-/// selected state (accent-color background + selected foreground color) so it
-/// reads as a menu item.
-/// Dimensions match measurements of the native NSMenu on macOS 26: the
-/// highlight is inset 5pt from the panel edge, the text a further 12pt from
-/// the highlight's left edge, and the item is about 24pt tall.
-/// The 9pt highlight corner radius is the concentric value: the OS draws the
-/// MenuBarExtra window panel with a corner radius of about 14pt in circular
-/// terms (larger than NSMenu's roughly 10pt), minus the 5pt inset. Concentric
-/// radii keep the distance between the two corner curves at 5pt everywhere, so
-/// the panel corner and the highlight corner look parallel. The style is
-/// .continuous to match the curve family of the continuous corners (a curve
-/// whose tails rise gradually) the OS uses for the panel's corners.
+// Imitates an NSMenu item, which the .window panel style cannot use. The
+// dimensions come from measuring the native menu on macOS 26: 5pt highlight
+// inset, 12pt text inset inside the highlight, about 24pt item height.
+// The 9pt corner radius is concentric with the panel's roughly 14pt continuous
+// corner minus the 5pt inset, which keeps the two curves parallel.
 private struct MenuItem: View {
     let title: String
     let isEnabled: Bool
@@ -249,16 +217,15 @@ private struct MenuItem: View {
         .onHover { isHighlighted = $0 }
     }
 
-    /// Disabled items follow NSMenu: dimmed label, no hover highlight. onHover
-    /// keeps reporting while disabled, so the highlight is gated here instead of
-    /// at event delivery.
+    // onHover keeps firing on a disabled button, so the NSMenu behavior of no
+    // highlight while disabled is enforced here rather than at event delivery.
     private var showsHighlight: Bool {
         isHighlighted && isEnabled
     }
 }
 
-/// Equivalent of an NSMenu separator. The native NSMenu separator is drawn
-/// across the full menu width without insets, so this has no horizontal padding.
+// The native NSMenu separator spans the full menu width, hence no horizontal
+// padding.
 private struct MenuSeparator: View {
     var body: some View {
         Divider()
@@ -266,13 +233,9 @@ private struct MenuSeparator: View {
     }
 }
 
-/// Measures and reports, from the NSWindow hosting the panel, the maximum
-/// height the panel can take when extended to the bottom of the screen. A
-/// MenuBarExtra window panel is pinned just below the menu bar at its top edge
-/// and grows only downward, so the available height runs from the window's top
-/// edge (frame.maxY) to the bottom of screen.visibleFrame (the screen's bottom
-/// edge excluding the Dock). SwiftUI cannot touch the window, so this is picked
-/// up via NSViewRepresentable.
+// A MenuBarExtra panel is pinned below the menu bar and grows only downward, so
+// its height limit is the distance from the window's top edge to the bottom of
+// the screen's visibleFrame. SwiftUI cannot reach the window, so AppKit does it.
 private struct PanelMaxHeightReader: NSViewRepresentable {
     let onChange: (CGFloat) -> Void
 
@@ -285,15 +248,10 @@ private struct PanelMaxHeightReader: NSViewRepresentable {
     func updateNSView(_ view: WindowObservingView, context: Context) {}
 }
 
-/// NSView that watches window attachment and movement and reports the maximum
-/// height. At viewDidMoveToWindow the panel's positioning may not be finished
-/// yet, so the frame is read one tick later. didMove / didChangeScreen are
-/// additionally subscribed because with menu bars on multiple displays the same
-/// window moves to another screen and is redisplayed, so the value is
-/// recomputed on the destination screen each time the panel is reopened. When
-/// the panel grows downward, the origin also moves and didMove fires, but the
-/// top edge (maxY) does not change, so the reported value stays the same and no
-/// relayout loop occurs.
+// didMove and didChangeScreen matter because with menu bars on several displays
+// the same window is repositioned onto the screen where the panel reopens.
+// Growing downward moves the origin but not maxY, so the reported value is
+// unchanged and no relayout loop occurs.
 private final class WindowObservingView: NSView {
     var onMaxHeightChange: ((CGFloat) -> Void)?
     private var observers: [NSObjectProtocol] = []
@@ -312,6 +270,8 @@ private final class WindowObservingView: NSView {
                 }
             )
         }
+        // The panel is not positioned yet at this point, so read the frame one
+        // runloop tick later.
         DispatchQueue.main.async { [weak self] in
             self?.reportMaxHeight()
         }

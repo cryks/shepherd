@@ -1,43 +1,14 @@
-// The values one agent resolves its templates against: the typed pane, the
-// verbatim herdr records for that pane's agent / workspace / tab, the excerpt
-// currently displayable for it, and the label naming its endpoint.
-//
-// This file owns the variable namespace, in one place, because a row and a
-// notification must resolve the same name to the same value. Two layers share
-// it: `herdr.agent.` / `herdr.workspace.` / `herdr.tab.` walk the raw records
-// under herdr's own snake_case keys, and unprefixed names are Shepherd-derived
-// (a stripped title, a shortened cwd, the excerpt, the source label, the brand
-// mark, the status glyph) and never merge into the herdr layer. A name outside
-// both layers resolves to nil, which the template layer renders as empty.
-//
-// A context performs no lookup of its own: FleetStore.rowContext(for:)
-// assembles it from the endpoint's current snapshot. A context built from a
-// pane alone carries no raw records, and then every `herdr.*` name resolves
-// empty rather than failing.
-
 import AppKit
 import Foundation
 
-/// Everything one row needs to resolve template variables.
 struct AgentRowContext: Equatable, Sendable {
-    /// The pane as the typed model sees it. The status icon slot and the
-    /// `status` style preset read it directly, outside any template.
     let pane: Pane
-    /// This pane's `agents[]` element of session.snapshot.
     let rawAgent: JSONValue?
-    /// The `workspaces[]` element of the pane's own workspace, carrying the
-    /// branch Store injected under `branch`. Linked worktrees are merged into a
-    /// single display group above this layer, and that merge never reaches this
-    /// record.
+    // The pane's own workspace record. Linked worktrees are merged into one
+    // display group above this layer, and that merge never reaches it.
     let rawWorkspace: JSONValue?
-    /// The `tabs[]` element whose id is the pane's `tab_id`.
     let rawTab: JSONValue?
-    /// Text for `{excerpt}`. nil whenever no excerpt is displayable: the
-    /// preference is off, the agent has no supported grammar, or the read is
-    /// still loading or produced nothing.
     let excerpt: String?
-    /// Text for `{source}`. nil when no remote is visible, so a label naming
-    /// the only endpoint there is never reaches a row or a notification.
     let sourceLabel: String?
 
     init(
@@ -56,19 +27,16 @@ struct AgentRowContext: Equatable, Sendable {
         self.sourceLabel = sourceLabel
     }
 
-    /// Resolves one template variable name. Returns nil for names the language
-    /// does not define, which templates render as empty.
     @MainActor
     func templateValue(for name: String) -> TemplateValue? {
         resolve(name, textOnly: false)
     }
 
-    /// Resolution for a context with no place to draw an image and no excerpt
-    /// of its own: `{agent_icon}` and `{excerpt}` return nil, so they neither
-    /// print nor satisfy a `{a|b}` alternative nor keep a `[...]` group. Every
-    /// other name resolves exactly as in a row. Notification templates render
-    /// through this, and AttentionNoticeStager renders them once more with the
-    /// pane's excerpt supplied for `{excerpt}`.
+    // For contexts with no place to draw an image and no excerpt of their own:
+    // `{agent_icon}` and `{excerpt}` return nil so they neither print nor
+    // satisfy a `{a|b}` alternative nor keep a `[...]` group. Notifications
+    // render through this, and AttentionNoticeStager renders once more with the
+    // pane's excerpt supplied.
     @MainActor
     func textTemplateValue(for name: String) -> TemplateValue? {
         resolve(name, textOnly: true)
@@ -111,9 +79,6 @@ struct AgentRowContext: Equatable, Sendable {
         }
     }
 
-    /// Dotted path below `prefix`, or nil when the name belongs to another
-    /// layer. `herdr.agent.` with nothing after it yields an empty path, which
-    /// addresses the record itself and has no text form.
     private static func path(of name: String, under prefix: String) -> [Substring]? {
         guard name.hasPrefix(prefix) else { return nil }
         return name.dropFirst(prefix.count).split(separator: ".")
@@ -124,33 +89,29 @@ struct AgentRowContext: Equatable, Sendable {
         return .text(text)
     }
 
-    /// While Codex waits for input it retitles its terminal to
-    /// "[ ! ] Action Required | <task>", blinking the bracketed glyph between
-    /// "!" and ".". herdr's stripped title keeps that decoration; the status
-    /// icon and the notification glyph already carry the blocked state, so
-    /// `{title}` keeps only the task part. The anchor makes it a prefix rule: a
-    /// title that merely quotes the phrase is left alone.
+    // While Codex waits for input it retitles its terminal to
+    // "[ ! ] Action Required | <task>", blinking the bracketed glyph between
+    // "!" and ".". The status icon and the notification glyph already carry the
+    // blocked state, so only the task part is kept. The anchor makes it a
+    // prefix rule, leaving a title that merely quotes the phrase alone.
     private static let codexActionRequiredPrefix = #/^\[ . \] Action Required \| /#
 
-    /// `{title}`. Empty when herdr has no title yet and when the title was
-    /// nothing but the Codex prefix; a template that wants a fallback writes
-    /// `{title|herdr.agent.agent}`.
+    // Empty for a missing title and for a title that was nothing but the Codex
+    // prefix; a template wanting a fallback writes `{title|herdr.agent.agent}`.
     private var strippedTitle: String {
         guard var title = pane.terminalTitleStripped else { return "" }
         title.replace(Self.codexActionRequiredPrefix, with: "")
         return title
     }
 
-    /// Working directory backing `{cwd_short}` and `{cwd_name}`. Read from the
-    /// raw record because the typed Pane does not carry it.
+    // Read from the raw record because the typed Pane does not carry it.
     private var cwd: String? {
         guard case .string(let cwd)? = rawAgent?["cwd"], !cwd.isEmpty else { return nil }
         return cwd
     }
 
-    /// Replaces the home directory with `~`. The comparison is made against
-    /// home plus a separator, so a sibling directory whose name merely starts
-    /// with the home directory's name keeps its full path.
+    // Compared against home plus a separator, so a sibling directory whose name
+    // merely starts with the home directory's name keeps its full path.
     private static func abbreviatingHome(_ path: String) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         guard !home.isEmpty else { return path }
@@ -160,19 +121,17 @@ struct AgentRowContext: Equatable, Sendable {
         return "~/" + path.dropFirst(prefix.count)
     }
 
-    /// `{agent_icon}`. nil for a pane with no detected agent and for an agent
-    /// with no mark asset, so `{agent_icon|herdr.agent.agent}` falls through to
-    /// the agent name. The style the row draws it in is the row's choice; both
-    /// variants ship together, so mono answers the existence question.
+    // nil lets `{agent_icon|herdr.agent.agent}` fall through to the agent name.
+    // Both style variants ship together, so the default one answers whether a
+    // mark exists at all.
     @MainActor
     private var agentIcon: TemplateValue? {
         guard let agent = pane.agent, AgentIcons.icon(for: agent) != nil else { return nil }
         return .icon(agent: agent)
     }
 
-    /// `{status_emoji}`. The color family matches the menu bar icons and
-    /// AgentStatus.indicatorColor; idle and unknown share one glyph because a
-    /// notification only ever shows blocked or done.
+    // The hues match the menu bar icons and indicatorColor. idle and unknown
+    // share a glyph because a notification only ever shows blocked or done.
     private static func statusEmoji(_ status: AgentStatus) -> String {
         switch status {
         case .blocked: "🔴"

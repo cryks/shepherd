@@ -1,25 +1,13 @@
-// Socket-bound RPC access for coherent agent screen observations. This file
-// owns no polling, cache, or extraction state: the monitor decides when to run
-// agent.get -> agent.read -> agent.get and rejects an observation when the two
-// AgentInfo values describe different states or occupants. Each live instance
-// captures one explicit socket path so remote reads stay on their SSH-forwarded
-// Herdr endpoint rather than falling through to the local default socket.
-
 import Foundation
 
-/// Pair of RPC operations used by the agent screen monitor. Tests can replace
-/// either closure independently to gate each stage of the bracketing
-/// transaction without opening a Unix socket.
+// Closures rather than a protocol so tests can gate each stage of the
+// bracketing transaction separately without opening a Unix socket.
 struct AgentReadDataSource: Sendable {
     var get: @Sendable (_ target: String) async throws -> AgentGetResult
     var readVisible: @Sendable (_ target: String) async throws -> AgentReadResult
 
-    /// Creates a data source pinned to `socketPath`.
-    ///
-    /// `readVisible` requests the terminal's current visible grid as plain text
-    /// and asks Herdr to remove ANSI sequences. It intentionally omits `lines`;
-    /// visible reads are bounded by the terminal viewport and Herdr's response
-    /// limit.
+    // The socket path is pinned per instance: a remote endpoint must be read
+    // over its SSH-forwarded socket, not the local default one.
     static func live(socketPath: String) -> AgentReadDataSource {
         AgentReadDataSource(
             get: { [socketPath] target in
@@ -30,6 +18,8 @@ struct AgentReadDataSource: Sendable {
                     as: AgentGetResult.self
                 )
             },
+            // `lines` is omitted on purpose: a visible read is already bounded
+            // by the terminal viewport and Herdr's response limit.
             readVisible: { [socketPath] target in
                 try await Herdr.request(
                     "agent.read",

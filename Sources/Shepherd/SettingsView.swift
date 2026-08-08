@@ -1,24 +1,5 @@
-// UI for the Settings scene. General settings, row and notification templates,
-// remote monitoring targets, and global hotkeys are separated into tabs. General
-// owns only bindings to app-wide preferences;
-// notification authorization and cleanup stay in NotificationSettingsCoordinator
-// because toggling that preference has operating-system side effects. Remote
-// editing passes only values that passed RemoteSourceConfiguration validation to
-// FleetStore, and no SSH passwords or private keys are stored. Authentication,
-// ProxyJump, and key selection are resolved by `/usr/bin/ssh` from
-// `~/.ssh/config` and ssh-agent.
-//
-// SettingsWindowSizer owns the window's size, not SwiftUI: a TabView asks for
-// the width its widest tab needs (the Display pane's split, around 900pt) no
-// matter which tab is selected, so the compact tabs would open far too wide.
-// The window adds 88pt of vertical chrome and none horizontally.
-
 import SwiftUI
 
-/// UserDefaults key for whether agent brand marks are shown in color.
-/// The Display settings tab writes it and AgentRow reads it. Both reference it
-/// via @AppStorage, so toggling is reflected immediately in the rows currently
-/// on screen.
 let colorAgentIconsKey = "ColorAgentIcons"
 
 struct SettingsView: View {
@@ -58,11 +39,10 @@ struct SettingsView: View {
                 }
                 .tag(SettingsTab.hotkeys)
         }
-        // A constant, flexible frame: SettingsWindowSizer owns the window's
-        // size, and SwiftUI would fight it if the content's own sizing changed
-        // per tab. The floor is the compact tabs' layout size; the Display tab
-        // clips below its split's minimum, which the sizer's per-tab floor
-        // prevents from persisting.
+        // The frame stays constant across tabs: SettingsWindowSizer owns the
+        // window's size, and SwiftUI would fight it if the content sized
+        // itself per tab. The Display tab clips below the floor here, which
+        // the sizer's per-tab minimum keeps from persisting.
         .frame(
             minWidth: SettingsTab.compactSize.width,
             idealWidth: SettingsTab.compactSize.width,
@@ -79,16 +59,13 @@ struct SettingsView: View {
     }
 }
 
-/// The settings tabs, each with the content size it opens at. The window
-/// animates between these sizes as tabs are selected; a size the reader drags
-/// the window to is remembered per tab for the session.
 enum SettingsTab: Hashable {
     case general
     case display
     case remotes
     case hotkeys
 
-    /// Layout size the three form tabs are written against.
+    // Layout size the three form tabs are written against.
     static let compactSize = CGSize(width: 520, height: 500)
 
     var defaultSize: CGSize {
@@ -98,8 +75,8 @@ enum SettingsTab: Hashable {
         }
     }
 
-    /// Floor while this tab is selected. Display's is the width below which its
-    /// editor-plus-preview split starts clipping its columns.
+    // Display's width is where its editor-plus-preview split starts clipping
+    // its columns.
     var minimumSize: CGSize {
         switch self {
         case .display: CGSize(width: 760, height: 520)
@@ -108,28 +85,25 @@ enum SettingsTab: Hashable {
     }
 }
 
-/// Drives the settings window's frame from the selected tab: on a tab change
-/// the window animates to that tab's remembered or default size, keeping its
-/// top-left corner still, and takes the tab's floor as its minimum content
-/// size. SwiftUI is kept out of window sizing entirely (the content's own
-/// sizing never changes), because its instant resize on tab selection is what
-/// this animation replaces.
+// AppKit sizes the window instead of SwiftUI: a TabView asks for the width its
+// widest tab needs (the Display split) whichever tab is selected, so the
+// compact tabs would open far too wide, and SwiftUI's resize on tab selection
+// is instant where this animates.
 private struct SettingsWindowSizer: NSViewRepresentable {
     let tab: SettingsTab
 
     final class Coordinator {
         var appliedTab: SettingsTab?
-        /// Content size each tab was last seen at, so a reader's resize
-        /// survives leaving and revisiting the tab within one app run.
+        // Kept so a resize survives leaving and revisiting a tab within one
+        // app run.
         var rememberedSizes: [SettingsTab: CGSize] = [:]
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    /// Reports the window it is added to. AppKit sets a view's window before
-    /// the window is ordered front, so this is where the first size lands:
-    /// applied any later, the window is already on screen at the size SwiftUI
-    /// gave it, and the correction reads as a flash.
+    // AppKit sets a view's window before the window is ordered front, so this
+    // is where the first size lands. Applied any later, the window is already
+    // on screen at SwiftUI's size and the correction reads as a flash.
     final class SizerView: NSView {
         var onAttachToWindow: ((NSWindow) -> Void)?
 
@@ -145,9 +119,9 @@ private struct SettingsWindowSizer: NSViewRepresentable {
     func updateNSView(_ view: SizerView, context: Context) {
         let tab = tab
         let coordinator = context.coordinator
-        // This pass runs before SwiftUI attaches the view, so the handler is
-        // what sizes the window on the first open; from then on the window is
-        // reachable here and a tab change goes through the animating path.
+        // The first pass runs before SwiftUI attaches the view, so the handler
+        // is what sizes the window on the first open; afterwards the window is
+        // reachable here and a tab change takes the animating path.
         view.onAttachToWindow = { window in apply(tab, to: window, coordinator) }
         guard let window = view.window else { return }
         // updateNSView must not mutate state during an update pass.
@@ -156,10 +130,10 @@ private struct SettingsWindowSizer: NSViewRepresentable {
 
     private func apply(_ tab: SettingsTab, to window: NSWindow, _ coordinator: Coordinator) {
         guard coordinator.appliedTab != tab else { return }
-        // Sizes are measured and applied as deltas against contentLayoutRect,
-        // the area below the tab toolbar. The frameRect/contentRect conversions
-        // are styleMask-based and leave the toolbar out, so a frame computed
-        // through them comes up a toolbar short and clips the pane's bottom.
+        // Sizes are deltas against contentLayoutRect, the area below the tab
+        // toolbar. The frameRect/contentRect conversions are styleMask-based
+        // and leave the toolbar out, so a frame computed through them comes up
+        // a toolbar short and clips the pane's bottom.
         let current = window.contentLayoutRect.size
         if let previous = coordinator.appliedTab {
             coordinator.rememberedSizes[previous] = current
@@ -178,8 +152,8 @@ private struct SettingsWindowSizer: NSViewRepresentable {
         frame.size.height += target.height - current.height
 
         guard animatesFromPreviousTab else {
-            // The first size is set while the window is off screen and before
-            // AppKit has placed it, so only the size is ours to set here.
+            // The window is still off screen and unplaced, so only its size is
+            // ours to set here.
             window.setFrame(frame, display: false)
             return
         }
@@ -289,22 +263,18 @@ private struct GeneralSettingsView: View {
         }
         .formStyle(.grouped)
         .onAppear {
-            // When the window is ordered front, AppKit makes the first editable
-            // text field (the custom section-title field) the initial first
-            // responder, which opens the pane with that field focused and its
-            // text selected. SwiftUI's defaultFocus modifier cannot prevent
-            // this: in a Settings scene it is ignored outright (verified on
-            // macOS 26 with a probe app; even redirecting to another field has
-            // no effect), and FocusState offers no "focus nothing" value at
-            // window bringup. The responder assignment happens in the same
-            // runloop turn as ordering the window front, so clearing one turn
-            // later undoes it without racing it.
+            // AppKit makes the first editable text field the initial first
+            // responder when the window is ordered front. defaultFocus cannot
+            // stop this — a Settings scene ignores it outright (checked on
+            // macOS 26) — and FocusState has no "focus nothing" value. The
+            // assignment lands in the same runloop turn that orders the window
+            // front, so clearing one turn later undoes it without racing it.
             DispatchQueue.main.async { isLocalTitleFieldFocused = false }
         }
     }
 
-    /// Shepherd keeps the app preference ON after denial. This row exposes the
-    /// separate macOS delivery gate without pretending the Toggle was reverted.
+    // The app preference stays on after macOS denies delivery, so this warning
+    // reports the separate system-side block instead of reverting the Toggle.
     private var showsNotificationSystemWarning: Bool {
         guard notificationSettings.isEnabled else { return false }
         if notificationSettings.authorizationError != nil { return true }
@@ -671,10 +641,10 @@ private struct RemoteSourceEditor: View {
     }
 
     private var candidate: RemoteSourceConfiguration {
-        // Visibility is owned by the toggle in the settings list and monitoring
-        // state by the menu panel checkbox; FleetStore.updateRemote preserves
-        // the values as of just before saving. Here, validation uses the values
-        // from when the editor was opened.
+        // Visibility belongs to the toggle in the settings list and monitoring
+        // state to the menu panel checkbox. FleetStore.updateRemote keeps the
+        // values as of just before saving, so the stale ones carried here only
+        // feed validation.
         RemoteSourceConfiguration(
             id: context.configuration.id,
             label: label,

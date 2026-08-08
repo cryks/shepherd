@@ -1,47 +1,10 @@
-// Observed state of a single herdr endpoint. Reads session.snapshot's protocol,
-// agents, and workspaces as one value and transfers them onto a display snapshot
-// on the MainActor.
+// Polling, not events.subscribe: herdr events do not replay history and
+// pane.updated cannot be filtered per field, so a subscription would stream far
+// more than the watch set. Overlapping polls are coalesced instead of queued so
+// RPCs cannot pile up on a slow endpoint.
 //
-// Synchronization contract:
-//   - events.subscribe is not used. Herdr events do not replay history, and
-//     pane.updated cannot be filtered per field, so we do not hold a high-frequency
-//     stream per connection that includes updates outside the watch set
-//   - start() fetches once immediately, then re-fetches at each source's
-//     pollInterval. Local uses 500ms; remote uses the saved setting (default 2s)
-//     passed in by FleetStore
-//   - When a poll tick overlaps an in-flight fetch, the in-flight one is awaited.
-//     No extra fetch is issued right after completion; the next tick catches up to
-//     the latest state, so RPCs do not pile up on a slow endpoint
-//   - snapshot returns agents and workspaces from the same server capture, plus
-//     the verbatim herdr records of that same response line for the template
-//     layer. It is published as ready from the first response that decodes. A
-//     server on a different protocol is still published, with protocolWarning
-//     exposing the version; a failed poll on such a server then reports
-//     protocolMismatch instead of disconnected
-//   - Branch names alone are not included in session.snapshot, so worktree.list is
-//     additionally fetched within the same poll for each workspace that has watched
-//     panes. One response returns branches for every workspace opening the same
-//     repo, so workspaces already resolved by an earlier response are not
-//     re-fetched. The result is written into the raw workspace records under
-//     `branch`, which is where `{herdr.workspace.branch}` reads it. Failure of this
-//     fetch (including non-git workspaces) only means a missing display decoration
-//     (no branch name) and does not make the whole poll disconnected
-//   - On session.snapshot failure, the stale list is not published; state returns
-//     to disconnected. Polling is not stopped, and the next success returns to ready
-//   - stop() cancels the poll and the in-flight task. If synchronous I/O returns
-//     after cancellation, it is not reflected into state
-//   - suspendPolling() / resumePolling() are a resumable pause for system sleep.
-//     suspend cancels the poll and in-flight RPCs and does not reflect their
-//     results into state. resume fetches once immediately, then restarts polling
-//   - AgentReadMonitor is a separate projection fed by every successful
-//     snapshot. While the excerpt preference is on, it reads screens in the
-//     background (on status changes and at the preference's cadence while a
-//     pane works) so the excerpt cache is ready before any UI surface opens,
-//     without delaying snapshot or branch publication
-//
-// No read/unread tracking is kept. blocked/done are herdr-side states; viewing the
-// pane in herdr turns done back to idle, and this app's display clears on the next
-// poll accordingly.
+// No read/unread tracking: blocked and done are herdr-side states, and viewing
+// the pane in herdr turns done back to idle on its own.
 
 import Foundation
 import Observation
@@ -49,30 +12,17 @@ import os
 
 private let log = Logger(subsystem: "io.github.cryks.shepherd", category: "store")
 
-/// Observed snapshot the UI receives in a single write.
-/// panes and workspaces are built from the same session.snapshot; neither side is
-/// updated separately later.
 struct AgentSnapshot: Equatable {
     var panes: [String: Pane]
     var workspaces: [String: Workspace]
-    /// The same records as panes and workspaces, kept as herdr sent them, for
-    /// the row and notification templates. agents holds one entry per tracked
-    /// pane; workspaces and tabs stay whole, since a tracked pane can point at
-    /// any of them. Equality of a snapshot therefore covers every herdr field,
-    /// not only the ones the typed models read.
+    // Verbatim herdr records for the row and notification templates, which
+    // address fields the typed models above do not carry. Equality therefore
+    // covers every herdr field, not only the typed ones.
     var raw: HerdrRawSnapshot
 
-    /// Converts server snapshot arrays into ID-keyed dictionaries for the UI.
-    /// Subagent panes and panes with no detected agent are excluded at this
-    /// boundary and never mixed into anything downstream in the display layer.
-    ///
-    /// - Parameters:
-    ///   - branches: Workspace ID → branch name from worktree.list. Each entry
-    ///     is written onto the matching raw workspace record as `branch`, the
-    ///     one field of that record herdr did not send.
-    ///   - raw: Records of the same session.snapshot response. Untracked panes
-    ///     are dropped from it here, so a subagent's record is not retained by
-    ///     the snapshot the UI holds.
+    // branches comes from worktree.list: session.snapshot carries no branch
+    // name, so it is grafted onto the raw workspace records under `branch`,
+    // where `{herdr.workspace.branch}` reads it.
     init(
         agents: [Pane],
         workspaces: [Workspace],
@@ -98,64 +48,49 @@ struct AgentSnapshot: Equatable {
     }
 }
 
-/// Published state of the connection and display data. Only ready serves as the
-/// data source for the menu bar and monitor window; a stale snapshot after an RPC
-/// failure is never left on display.
 enum StoreState: Equatable {
     case disconnected
     case synchronizing
     case ready(AgentSnapshot)
-    /// A poll failed on a server whose protocol differs from
-    /// Herdr.supportedProtocol — the mismatch is the likely cause, so it is
-    /// reported instead of a plain disconnect. While such a server still
-    /// answers, the store stays ready and protocolWarning carries the version.
+    // A failure on a server whose protocol differs from Herdr.supportedProtocol
+    // is most likely caused by that difference, so it is reported instead of a
+    // plain disconnect.
     case protocolMismatch(Int)
 }
 
-/// One session.snapshot response in both forms the app needs: the typed model
-/// the store reduces, and the records exactly as herdr wrote them, which the
-/// template layer addresses by their snake_case names.
 struct SnapshotFetch {
     var session: HerdrSessionSnapshot
     var raw: HerdrRawSnapshot
 
-    /// Test and preview fixtures that only exercise the typed path.
     init(session: HerdrSessionSnapshot, raw: HerdrRawSnapshot = .empty) {
         self.session = session
         self.raw = raw
     }
 }
 
-/// session.snapshot answered, but the body no longer decodes into the typed
-/// models this app was written against. Carries the protocol the response
-/// named (read through the lenient raw pass) so the failure can be shown as
-/// an unsupported protocol rather than a dropped connection.
+// session.snapshot answered but its body no longer decodes into the typed
+// models. The protocol is read through the lenient raw pass so the failure can
+// name an unsupported protocol instead of looking like a dropped connection.
 struct SnapshotSchemaError: Error {
     var serverProtocol: Int?
     var underlying: Error
 }
 
-/// RPC boundary the Store reads through. Tests control response completion and
-/// failure to reproduce the initial fetch, polling, and races with stop without a
-/// real socket.
 struct StoreDataSource: Sendable {
     var snapshot: @Sendable () async throws -> SnapshotFetch
-    /// Worktree list of the repo the workspace belongs to. Used only for showing
-    /// the pane's branch name; failure has no bearing on the poll's success.
+    // Branch names are display decoration only; a failure here does not fail
+    // the poll.
     var worktrees: @Sendable (_ workspaceID: String) async throws -> WorktreeListResult
 
-    /// For remote endpoints, this pins the local-side socket of the SSH tunnel so
-    /// no part of the poll leaks to the local herdr.
     static func live(socketPath: String) -> StoreDataSource {
         StoreDataSource(
             snapshot: {
-                // One RPC, two decodes of its response line: makeDecoder() for
-                // the typed model, and a plain decoder for the raw tree, whose
+                // One RPC, two decodes of the same line: makeDecoder() for the
+                // typed model, and a plain decoder for the raw tree, whose
                 // dynamic keys .convertFromSnakeCase would otherwise rewrite.
-                // request() checks only the envelope (an error line becomes
-                // RPCError); the typed model is decoded here so that when a
-                // future protocol breaks the typed shape, the failure still
-                // names the server's protocol via the lenient raw pass.
+                // The typed decode happens here, not in request(), so a future
+                // protocol that breaks the typed shape still reports the
+                // server's protocol from the lenient raw pass.
                 try await Herdr.request(
                     "session.snapshot",
                     socketPath: socketPath,
@@ -196,27 +131,20 @@ final class Store {
     static let localPollInterval: Duration = .milliseconds(500)
 
     private(set) var state: StoreState
-    /// Protocol of the endpoint's last successfully decoded session.snapshot.
-    /// Kept across failures so a failed poll on a mismatched server can be
-    /// reported as protocolMismatch rather than disconnected.
+    // Kept across failures so a failed poll on a mismatched server can still be
+    // reported as protocolMismatch.
     private(set) var serverProtocol: Int?
-    /// FleetStore applies remote setting changes without an SSH reconnect. Values
-    /// of zero or less would busy-loop and are rejected; production only passes
-    /// the RemotePollingInterval presets.
     private(set) var pollInterval: Duration
 
-    /// Non-nil while the endpoint is monitored optimistically: the display
-    /// snapshot is live, but the server speaks a protocol this app was not
-    /// written against, so any feature may misbehave. UI surfaces show a
-    /// warning next to the endpoint instead of refusing the data.
+    // The endpoint answers but speaks a protocol this app was not written
+    // against, so any feature may misbehave. The data is still shown, with a
+    // warning, rather than refused.
     var protocolWarning: Int? {
         guard case .ready = state, let serverProtocol,
               serverProtocol != Herdr.supportedProtocol else { return nil }
         return serverProtocol
     }
 
-    /// Returns an empty dictionary outside ready, so no path exists for the display
-    /// layer to reuse a pre-disconnect snapshot.
     var panes: [String: Pane] {
         guard case .ready(let snapshot) = state else { return [:] }
         return snapshot.panes
@@ -233,9 +161,8 @@ final class Store {
     private var snapshotTask: Task<Void, Never>?
     private var hasStarted = false
     private var hasBeenStopped = false
-    /// Pause during system sleep. Unlike hasBeenStopped, it can be lifted with
-    /// resumePolling(). A remote may be suspended while waiting for tunnel ready,
-    /// so this flag can be set before start().
+    // Unlike hasBeenStopped this is reversible. A remote can be suspended while
+    // it still waits for its tunnel, so it may be set before start().
     private var isPollingSuspended = false
 
     init(
@@ -253,9 +180,8 @@ final class Store {
         state = initialState
     }
 
-    /// Creates a live endpoint that reads only the given socket. The owner states
-    /// the local/remote interval explicitly, avoiding call sites where a default
-    /// argument would give a remote 500ms.
+    // pollInterval has no default here so no remote endpoint can silently
+    // inherit the local 500ms.
     static func live(socketPath: String, pollInterval: Duration) -> Store {
         Store(
             dataSource: .live(socketPath: socketPath),
@@ -266,14 +192,8 @@ final class Store {
 
     // MARK: - Derived views
 
-    /// Per-workspace groups for the monitor window, ordered by workspace number.
-    /// A linked-worktree workspace does not get its own heading; its panes merge
-    /// into the group of the workspace opening the same repo's root checkout (the
-    /// heading is the root side's label). Within a group, panes are ordered by
-    /// workspace number then Herdr tab number, so root panes come before worktree
-    /// panes and each workspace follows the tab order shown by Herdr.
-    /// Linked worktrees whose root checkout is not open as a workspace, and
-    /// workspaces without a heading in the snapshot, appear under their own heading.
+    // Panes of a linked worktree are shown under the workspace holding the same
+    // repo's root checkout, so one repo gets one heading.
     var workspaceGroups: [(workspace: Workspace, panes: [Pane])] {
         var groups: [String: (workspace: Workspace, panes: [Pane])] = [:]
         for pane in panes.values {
@@ -293,17 +213,10 @@ final class Store {
             }
     }
 
-    /// Verbatim herdr records addressed by the template language, for one
-    /// tracked pane.
-    ///
-    /// The workspace is the pane's own `workspace_id`, never the workspace a
-    /// linked worktree is displayed under, so `{herdr.workspace.*}` describes
-    /// the checkout the agent actually runs in. The tab is resolved through the
-    /// agent record's `tab_id`: pane and tab ids number independently, so it
-    /// cannot be derived from the pane id.
-    ///
-    /// Every element is nil outside `ready`, for an untracked or unknown pane,
-    /// and for a record herdr did not send.
+    // The workspace is the pane's own `workspace_id`, not the group it is
+    // displayed under, so `{herdr.workspace.*}` describes the checkout the agent
+    // runs in. Pane and tab ids number independently, so the tab must be
+    // resolved through the agent record's `tab_id`.
     func rawRecords(forPane paneID: String) -> (agent: JSONValue?, workspace: JSONValue?, tab: JSONValue?) {
         guard case .ready(let snapshot) = state,
               let agent = snapshot.raw.agents[paneID] else {
@@ -316,28 +229,21 @@ final class Store {
         )
     }
 
-    /// String value of an id field, or nil when the key is absent or holds
-    /// another JSON type.
     private static func identifier(_ record: JSONValue, _ key: String) -> String? {
         guard case .string(let id)? = record[key] else { return nil }
         return id
     }
 
-    /// Current display-safe line for a pane. Terminal text stays in the
-    /// endpoint's AgentReadMonitor rather than entering AgentSnapshot.
+    // Terminal text lives in AgentReadMonitor rather than AgentSnapshot, so
+    // excerpt changes do not make consecutive snapshots unequal.
     func agentExcerpt(for paneID: String) -> AgentExcerpt? {
         agentReadMonitor.excerpt(for: paneID)
     }
 
-    /// Loading state for a supported pane's Excerpt. FleetStore verifies
-    /// endpoint readiness and grammar support before exposing this to a row.
     func agentExcerptState(for paneID: String) -> AgentExcerptState {
         agentReadMonitor.excerptState(for: paneID)
     }
 
-    /// The workspace of the group a pane belongs to for display purposes. Panes of
-    /// linked worktrees are merged into the workspace opening the root checkout of
-    /// the same repoKey.
     private func groupWorkspace(for workspaceId: String) -> Workspace {
         guard let workspace = workspaces[workspaceId] else {
             return Workspace(workspaceId: workspaceId, label: workspaceId, number: Int.max)
@@ -348,9 +254,8 @@ final class Store {
         return rootWorkspacesByRepoKey[worktree.repoKey] ?? workspace
     }
 
-    /// repoKey → the workspace opening the root checkout. When multiple workspaces
-    /// open the same repo root, the lower-numbered one (the one listed earlier in
-    /// herdr) becomes the merge target.
+    // When several workspaces open the same repo root, the lower-numbered one
+    // wins so the merge target does not change between polls.
     private var rootWorkspacesByRepoKey: [String: Workspace] {
         workspaces.values.reduce(into: [:]) { roots, workspace in
             guard let worktree = workspace.worktree, !worktree.isLinkedWorktree else { return }
@@ -363,15 +268,13 @@ final class Store {
 
     // MARK: - Lifecycle
 
-    /// Starts the initial snapshot and polling. Repeated calls do not multiply
-    /// tasks, and there is no restart after stop. On settings OFF/ON, FleetStore
-    /// creates a new Store so stale RPC completions never reach the new runtime.
+    // There is no restart after stop: FleetStore builds a new Store instead, so
+    // RPCs of the old one can never reach the new runtime.
     func start() {
         guard !hasStarted, !hasBeenStopped else { return }
         hasStarted = true
         if case .ready = state {
-            // A Store holding a restored snapshot before start keeps showing it
-            // until the first poll completes.
+            // A restored snapshot stays on display until the first poll lands.
         } else {
             state = .synchronizing
         }
@@ -382,8 +285,6 @@ final class Store {
         startPolling()
     }
 
-    /// Stops polling and in-flight RPCs when the endpoint is removed or disabled,
-    /// and discards the display snapshot.
     func stop() {
         guard hasStarted, !hasBeenStopped else { return }
         hasBeenStopped = true
@@ -395,10 +296,8 @@ final class Store {
         state = .disconnected
     }
 
-    /// Stops polling and in-flight RPCs just before system sleep. Unlike stop(),
-    /// the display snapshot and started state are kept, and resumePolling() can
-    /// restart. If a cancelled RPC returns after wake, loadSnapshot's
-    /// Task.isCancelled guard keeps it out of state.
+    // Resumable counterpart of stop() for system sleep: the display snapshot and
+    // the started state survive.
     func suspendPolling() {
         guard !isPollingSuspended else { return }
         isPollingSuspended = true
@@ -412,8 +311,7 @@ final class Store {
         snapshotTask?.cancel()
     }
 
-    /// Fetches once immediately on wake from sleep and restarts polling. For a
-    /// Store suspended before start(), this is the initial fetch.
+    // Also the initial fetch for a Store that was suspended before start().
     func resumePolling() {
         guard isPollingSuspended else { return }
         isPollingSuspended = false
@@ -423,15 +321,13 @@ final class Store {
         startPolling()
     }
 
-    /// Clears screen-derived lifecycle state when the endpoint transport drops
-    /// before session.snapshot itself reports failure.
+    // Called when the transport drops before session.snapshot itself fails.
     func markAgentContentSourceUnavailable() {
         agentReadMonitor.sourceUnavailable()
     }
 
-    /// Applies a remote-settings poll preset change to the existing Store. The SSH
-    /// tunnel and socket path do not change, so the connection is not rebuilt;
-    /// only the current sleep is cancelled and the new interval takes over.
+    // The SSH tunnel and socket path do not change with the interval, so the
+    // connection is kept and only the current sleep is cancelled.
     func setPollInterval(_ interval: Duration) {
         precondition(interval > .zero)
         guard pollInterval != interval else { return }
@@ -497,10 +393,6 @@ final class Store {
         }
     }
 
-    /// State published for a failed poll. On a server whose protocol differs
-    /// from supportedProtocol — remembered from earlier polls or named by a
-    /// schema error — the mismatch is reported as the cause; a same-protocol
-    /// failure is a plain disconnect.
     private func failureState(after error: Error) -> StoreState {
         let mismatched = (error as? SnapshotSchemaError)?.serverProtocol ?? serverProtocol
         if let mismatched, mismatched != Herdr.supportedProtocol {
@@ -509,15 +401,12 @@ final class Store {
         return .disconnected
     }
 
-    /// Fetches worktree.list for each workspace that has watched panes and builds
-    /// the workspace ID → branch name mapping. One response returns branches with
-    /// open_workspace_id for every workspace opening the same repo, so workspaces
-    /// already resolved by an earlier response are not re-fetched. The workspace's
-    /// worktree metadata is not used to filter (some workspaces are git repos yet
-    /// carry no metadata in session.snapshot). Branch is display decoration, so a
-    /// failed workspace (including non-git ones) proceeds without a mapping (its
-    /// pane shows no branch name) and has no bearing on the poll's success.
-    /// Detached-HEAD checkouts have no branch and are not recorded.
+    // One worktree.list response carries open_workspace_id for every workspace
+    // opening the same repo, so workspaces an earlier response already resolved
+    // are skipped. Workspace worktree metadata cannot be used to filter: some
+    // git workspaces carry none in session.snapshot. Detached HEAD has no branch
+    // and is left unmapped, and a failed workspace only loses a display
+    // decoration.
     private func fetchBranches(
         for snapshot: HerdrSessionSnapshot
     ) async -> [String: String] {
@@ -545,8 +434,8 @@ final class Store {
         return branches
     }
 
-    /// Whether the pane should be kept in Store.panes. agent_kind is matched
-    /// exactly; agents with missing metadata or an unknown value stay in the list.
+    // agent_kind is matched exactly, so a pane with missing metadata or an
+    // unknown kind stays visible rather than disappearing.
     nonisolated static func shouldTrack(_ pane: Pane) -> Bool {
         pane.agent != nil && pane.tokens?.agentKind != "subagent"
     }
@@ -565,11 +454,9 @@ final class Store {
 
     // MARK: - Ordering
 
-    /// Sort key for panes within a group. A merged group mixes panes from
-    /// multiple workspaces, so the workspace number keeps the root → worktree
-    /// order. Herdr's tab number is the display order within one workspace.
-    /// `pane_id` is an opaque stable identifier and makes the order total when a
-    /// tab contains multiple agent panes or the raw tab record is absent.
+    // A merged group mixes panes from several workspaces, so the workspace
+    // number keeps root panes before worktree panes. `pane_id` makes the order
+    // total when one tab holds several agent panes or the tab record is absent.
     private func paneSortKey(_ pane: Pane) -> (Int, Int, String) {
         (
             workspaces[pane.workspaceId]?.number ?? Int.max,
@@ -578,9 +465,8 @@ final class Store {
         )
     }
 
-    /// Number of the tab containing this pane. `session.snapshot` keeps `tab_id`
-    /// on the agent record and `number` on the matching tab record; a missing or
-    /// out-of-range value sorts after numbered tabs.
+    // session.snapshot keeps `tab_id` on the agent record and `number` on the
+    // tab record, so the two must be joined here.
     private func tabNumber(for pane: Pane) -> Int {
         guard case .ready(let snapshot) = state,
               let agent = snapshot.raw.agents[pane.paneId],

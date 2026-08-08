@@ -1,16 +1,5 @@
-// Pins two things about the layout value: a per-agent entry replaces the base
-// lines instead of merging with them, and the built-in layout renders one exact
-// row and notification text. The separators and fallbacks of the built-in
-// templates are spelled out only here, so this is the single file to change
-// when that text is meant to change.
-//
-// The built-in text is rendered against a real AgentRowContext rather than a
-// table of answers, which makes the second test a guard over the whole chain:
-// the template sources, the names they use, and the herdr keys those names
-// reach.
-//
-// Not exercised here: the style presets, which the view layer maps to fonts,
-// and the rule that drops a line whose two sides both render empty.
+// The separators and fallbacks of the built-in templates are spelled out only
+// here, so this is the one file to edit when that text is meant to change.
 
 import XCTest
 @testable import Shepherd
@@ -42,7 +31,6 @@ final class RowLayoutTests: XCTestCase {
         XCTAssertEqual(lines.count, 3)
         XCTAssertEqual(row(lines[0].left), "Add payment flow integration tests")
         XCTAssertEqual(row(lines[0].right), "done")
-        // The sub-line is the brand mark, then a space, then the branch.
         XCTAssertEqual(
             lines[1].left.render { context.templateValue(for: $0) },
             [.icon(agent: "claude"), .text(" feature/checkout")]
@@ -57,9 +45,8 @@ final class RowLayoutTests: XCTestCase {
             "🟢 Add payment flow integration tests"
         )
         XCTAssertEqual(notification(templates.subtitle), "devbox · webapp")
-        // The excerpt is not read yet at the status transition, so its line
-        // renders empty there and is filled when the stager renders the
-        // templates again with the excerpt supplied.
+        // At the status transition the excerpt is not read yet, so its line
+        // renders empty until the stager renders the templates again.
         XCTAssertEqual(
             templates.body.map { notification($0.template) },
             ["claude · feature/checkout", ""]
@@ -72,8 +59,8 @@ final class RowLayoutTests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// Everything the built-in templates can name is present: a title, a brand
-    /// mark, a branch, a workspace label, an excerpt, and a remote source label.
+    // Carries every name the built-in templates can reach, so an expectation
+    // that renders empty means the name missed its key.
     private var doneClaudePaneOnARemoteHost: AgentRowContext {
         AgentRowContext(
             pane: Pane(

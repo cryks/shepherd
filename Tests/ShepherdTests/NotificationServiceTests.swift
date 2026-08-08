@@ -1,8 +1,3 @@
-// Verifies the UserNotifications adapter without registering the XCTest process
-// for notifications. The fake client records the exact UNNotificationRequest and
-// removal calls while authorization and persisted settings are controlled with
-// plain values and an isolated UserDefaults suite.
-
 import Foundation
 import UserNotifications
 import XCTest
@@ -150,6 +145,7 @@ final class NotificationServiceTests: XCTestCase {
         client.resumeSuspendedAdd()
         try await delivery.value
 
+        // Twice: terminate() removes first, then the add that landed after it is swept.
         XCTAssertEqual(client.pendingRemovalCalls, [[identifier], [identifier]])
         XCTAssertEqual(client.deliveredRemovalCalls, [[identifier], [identifier]])
     }

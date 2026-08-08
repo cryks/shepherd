@@ -1,10 +1,3 @@
-// Verifies the contract for what blinks in the menu bar (and only there).
-// Covers the visibility-phase decision derived from state, blink setting, and phase
-// (the hidden phase swaps in a fully transparent image), and additionally checks, on a
-// short cycle, that the app-owned clock advances the phase outside the lifecycle of the
-// MenuBarExtra label.
-// Reading the blink setting uses a test-only UserDefaults suite to avoid polluting standard.
-
 import XCTest
 @testable import Shepherd
 
@@ -47,7 +40,6 @@ final class MenuBarIconPresentationTests: XCTestCase {
         }
     }
 
-    /// Contract: with the blink setting off, blocked / done keep showing the circle in both phases.
     func testBlinkSettingOffKeepsStatusShapeInBothPhases() {
         for state in [MenuBarState.done, .blocked] {
             XCTAssertTrue(
@@ -63,7 +55,6 @@ final class MenuBarIconPresentationTests: XCTestCase {
         }
     }
 
-    /// Contract: the unstored default is on (blinking), and values written by the Toggle read back.
     func testBlinkEnabledDefaultsToTrueAndReadsStoredValue() {
         let (defaults, suiteName) = makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -77,7 +68,7 @@ final class MenuBarIconPresentationTests: XCTestCase {
         XCTAssertTrue(MenuBarIconPresentation.blinkEnabled(in: defaults))
     }
 
-    /// Contract: the image swapped in during the hidden phase does not change the status item's width.
+    // A hidden phase of a different size would shift the whole menu bar on every blink.
     @MainActor
     func testBlinkHiddenSharesCanvasWithStatusShapes() {
         XCTAssertEqual(StatusIcons.blinkHidden.size, StatusIcons.blocked.size)

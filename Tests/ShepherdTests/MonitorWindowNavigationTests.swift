@@ -1,8 +1,3 @@
-// Verifies the handoff contract between notification action routing and the
-// singleton Monitor scene. The tests exercise revision signaling independently
-// from SwiftUI window presentation and ensure a row target survives a brief
-// closing/opening overlap without outliving its handoff lease.
-
 import XCTest
 @testable import Shepherd
 

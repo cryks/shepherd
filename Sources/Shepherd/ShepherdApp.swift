@@ -1,11 +1,3 @@
-// Entry point. As an LSUIElement (hidden from the Dock) resident app, it shares
-// the FleetStore — which bundles local plus multiple remotes — across three
-// scenes: the menu bar item, the monitor window, and settings.
-// The monitor window is opened explicitly from the menu; it neither opens
-// automatically at launch nor gets restored (suppressed via
-// defaultLaunchBehavior / restorationBehavior). The About window behaves the
-// same way. Settings and About also open only from MenuPanel items.
-
 import AppKit
 import Observation
 import OSLog
@@ -17,14 +9,9 @@ private let applicationLog = Logger(
     category: "application"
 )
 
-/// Tells the focus pipeline whether a terminal handoff may continue after the
-/// source-application activation phase.
 enum ApplicationActivationResult: Equatable {
-    /// Shepherd is active and can yield activation through NSWorkspace.
     case active
-    /// AppKit did not activate Shepherd within the bound; continue best effort.
     case timedOut
-    /// Application teardown started; no new external application may be opened.
     case shutDown
 
     var allowsTerminalHandoff: Bool {
@@ -32,14 +19,13 @@ enum ApplicationActivationResult: Equatable {
     }
 }
 
-/// Serializes requests to make this accessory app active before it hands
-/// activation to another process. NSApplication activation is asynchronous and
-/// can be denied, so callers wait for the delegate's did-become-active callback
-/// or a bounded timeout. Concurrent notification clicks share one request.
+// NSApplication activation is asynchronous and can be denied, so a caller that
+// must be frontmost before handing activation to a terminal waits for the
+// delegate callback or a bounded timeout. Concurrent requests share one wait.
 @MainActor
 final class ApplicationActivationCoordinator {
-    /// NSApplication is process-wide, and ShepherdApplicationDelegate forwards
-    /// its matching lifecycle callbacks to this process-wide coordinator.
+    // NSApplication is process-wide, so the delegate's lifecycle callbacks have
+    // a single instance to forward to.
     static let shared = ApplicationActivationCoordinator()
 
     private let activationTimeout: Duration
@@ -47,12 +33,8 @@ final class ApplicationActivationCoordinator {
     private let requestActivation: @MainActor () -> Void
     private let onTimeout: @MainActor () -> Void
 
-    /// Continuations registered after an inactive check and drained by an
-    /// activation callback, timeout, or application shutdown.
     private var waiters: [CheckedContinuation<ApplicationActivationResult, Never>] = []
-    /// Exists while at least one waiter owns the current activation request.
     private var timeoutTask: Task<Void, Never>?
-    /// Set during termination so no new activation request outlives teardown.
     private var isShutDown = false
 
     init(
@@ -69,15 +51,13 @@ final class ApplicationActivationCoordinator {
         self.onTimeout = onTimeout
     }
 
-    /// Returns after Shepherd becomes active, the bounded wait expires, or app
-    /// teardown starts. A timeout permits a best-effort terminal request;
-    /// shutdown forbids it.
     func activate() async -> ApplicationActivationResult {
         guard !isShutDown else { return .shutDown }
         guard !isActive() else { return .active }
 
         return await withCheckedContinuation { continuation in
-            // Activation can arrive between the outer check and registration.
+            // Activation or shutdown can land between the checks above and
+            // registration below.
             guard !isShutDown else {
                 continuation.resume(returning: .shutDown)
                 return
@@ -104,8 +84,8 @@ final class ApplicationActivationCoordinator {
                 }
             }
 
-            // Register the continuation before requesting activation so a
-            // synchronous callback cannot leave the caller suspended.
+            // Register before requesting, so a synchronous activation callback
+            // cannot leave the caller suspended forever.
             requestActivation()
             if isActive() {
                 finish(with: .active)
@@ -113,12 +93,11 @@ final class ApplicationActivationCoordinator {
         }
     }
 
-    /// Resumes every request coalesced behind the current AppKit activation.
     func didBecomeActive() {
         finish(with: .active)
     }
 
-    /// Prevents termination from leaving checked continuations suspended.
+    // Termination must not leave checked continuations suspended.
     func shutdown() {
         isShutDown = true
         finish(with: .shutDown)
@@ -134,11 +113,6 @@ final class ApplicationActivationCoordinator {
     }
 }
 
-/// Bridges macOS termination paths (menu, logout, terminate) to FleetStore's
-/// stop, system sleep/wake to poll suspend/resume, and UserNotifications delegate
-/// callbacks to app-owned attention routing. On termination, managed SSH
-/// processes, temporary Unix sockets, and live agent notifications are cleaned up
-/// before the app exits.
 @MainActor
 final class ShepherdApplicationDelegate: NSObject, NSApplicationDelegate,
     UNUserNotificationCenterDelegate
@@ -150,19 +124,18 @@ final class ShepherdApplicationDelegate: NSObject, NSApplicationDelegate,
     var notificationTerminationHandler: (@MainActor () -> Void)?
     var notificationAuthorizationRefreshHandler: (@MainActor () -> Void)?
 
-    /// Observation tokens for sleep notifications. Sleep/wake are delivered only
-    /// by NSWorkspace.shared.notificationCenter, so registration goes there rather
-    /// than NotificationCenter.default.
-    /// The delegate lives as long as the app, so the observers are never removed.
+    // The delegate lives as long as the process, so these are never removed.
     private var sleepObservers: [NSObjectProtocol] = []
 
     func applicationWillFinishLaunching(_: Notification) {
-        // The center retains its delegate weakly. This application delegate is
-        // retained by SwiftUI's adaptor for the process lifetime.
+        // The center holds its delegate weakly; SwiftUI's adaptor keeps this
+        // object alive for the process lifetime.
         UNUserNotificationCenter.current().delegate = self
     }
 
     func applicationDidFinishLaunching(_: Notification) {
+        // Sleep and wake are posted only on NSWorkspace's center, never on
+        // NotificationCenter.default.
         let center = NSWorkspace.shared.notificationCenter
         sleepObservers = [
             center.addObserver(
@@ -170,7 +143,7 @@ final class ShepherdApplicationDelegate: NSObject, NSApplicationDelegate,
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                // queue: .main means main-thread delivery, so assumeIsolated holds.
+                // queue: .main guarantees main-thread delivery.
                 MainActor.assumeIsolated {
                     self?.store?.suspendPolling()
                 }
@@ -199,9 +172,8 @@ final class ShepherdApplicationDelegate: NSObject, NSApplicationDelegate,
         store?.stop()
     }
 
-    /// Shepherd is an accessory app, so a notification can arrive while one of
-    /// its windows is active. Explicit foreground presentation preserves the
-    /// same banner/list behavior without adding sound.
+    // An accessory app can be frontmost when a notification arrives, and macOS
+    // then suppresses it unless foreground presentation is requested.
     nonisolated func userNotificationCenter(
         _: UNUserNotificationCenter,
         willPresent _: UNNotification,
@@ -211,11 +183,8 @@ final class ShepherdApplicationDelegate: NSObject, NSApplicationDelegate,
         completionHandler([.banner, .list])
     }
 
-    /// Routes only the system's default notification click. The async delegate
-    /// return is UserNotifications' completion boundary, so local pane focus and
-    /// the terminal activation request remain inside the response lifetime.
-    /// The response is not Sendable; only its parsed opaque ID crosses to the
-    /// MainActor.
+    // UNNotificationResponse is not Sendable, so only the parsed ID crosses to
+    // the MainActor.
     nonisolated func userNotificationCenter(
         _: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
@@ -230,22 +199,18 @@ final class ShepherdApplicationDelegate: NSObject, NSApplicationDelegate,
         await performNotificationAction(notificationID)
     }
 
-    /// Awaits the app-owned action so returning from the async delegate cannot
-    /// precede Herdr pane selection or the AppKit activation handoff request.
+    // Returning from the async delegate ends the response lifetime, so pane
+    // focus and the activation handoff must complete before it returns.
     func performNotificationAction(_ notificationID: AttentionNotificationID) async {
         await notificationActionHandler?(notificationID)
     }
 }
 
-/// Process entry point. Only --render-screenshots (headless rendering of the
-/// README screenshots) branches to ScreenshotRenderer; everything else starts
-/// the SwiftUI App lifecycle.
 @main
 enum ShepherdMain {
     static func main() {
-        // static main is called on the main thread but carries no MainActor
-        // isolation declaration, so assumeIsolated hands off to
-        // ScreenshotRenderer (@MainActor).
+        // static main runs on the main thread but carries no MainActor
+        // isolation.
         let didRenderScreenshots = MainActor.assumeIsolated {
             ScreenshotRenderer.runIfRequested()
         }
@@ -269,9 +234,8 @@ struct ShepherdApp: App {
         let store = FleetStore()
         let monitorNavigation = MonitorWindowNavigation()
         let notificationCenter = AgentNotificationCenter()
-        // The stager holds blocked/done delivers briefly, then renders the
-        // notice again with the pane's freshly read excerpt available to
-        // `{excerpt}`; see AttentionNoticeStager.
+        // The stager delays blocked/done deliveries so `{excerpt}` can be
+        // rendered from a pane excerpt read after the state change.
         let noticeStager = AttentionNoticeStager(
             excerptState: { [weak store] in store?.agentExcerptState(for: $0) },
             render: { [weak store] notice, excerpt in
@@ -294,14 +258,11 @@ struct ShepherdApp: App {
             }
         )
         let menuBarBlinkClock = MenuBarBlinkClock {
-            // The setting is also read each tick. After switching it OFF, the
-            // next tick returns to the visible phase.
             MenuBarIconPresentation.blinkEnabled()
                 && MenuBarIconPresentation.shouldBlink(store.menuBarState)
         }
-        // Global hotkeys. The menu panel has no SwiftUI open/close API, so its
-        // toggle clicks the status item button; the monitor window toggle goes
-        // through MonitorWindowNavigation like every other app-level trigger.
+        // SwiftUI exposes no open/close API for a MenuBarExtra panel, so its
+        // hotkey clicks the status item button instead.
         let hotkeyCenter = GlobalHotkeyCenter(setting: HotkeySetting.shared) {
             [weak store, weak monitorNavigation] action in
             switch action {
@@ -368,10 +329,8 @@ struct ShepherdApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        // Pop-out window. MonitorView lays a full-surface material via
-        // containerBackground and adds a toolbar item (status summary). The
-        // title bar stays standard; alignment of the title and traffic lights
-        // is left to AppKit.
+        // Both extra windows open only from the menu, so launch and state
+        // restoration must not bring them up on their own.
         Window("Shepherd", id: monitorWindowId) {
             MonitorView(store: store, navigation: monitorNavigation)
         }
@@ -379,8 +338,6 @@ struct ShepherdApp: App {
         .defaultLaunchBehavior(.suppressed)
         .restorationBehavior(.disabled)
 
-        // About window. windowResizability(.contentSize) fixes the window to
-        // AboutView's intrinsic size, so it opens as a non-resizable panel.
         Window(tr("About Shepherd", ja: "Shepherd について"), id: aboutWindowId) {
             AboutView()
         }
@@ -395,21 +352,17 @@ struct ShepherdApp: App {
                 updater: updater
             )
         }
-        // SettingsWindowSizer animates the window between per-tab sizes and
-        // owns each tab's floor; contentMinSize resizability keeps the frame
-        // draggable past that floor instead of locking it to the content.
+        // SettingsWindowSizer owns each tab's minimum size; contentMinSize
+        // leaves the frame draggable past it instead of locking it to the
+        // content.
         .windowResizability(.contentMinSize)
     }
 }
 
-/// Installs the SwiftUI OpenWindowAction and DismissWindowAction at the
-/// always-mounted menu bar label. Notification responses and hotkey presses
-/// can arrive while the Monitor scene does not exist, so
-/// MonitorWindowNavigation retains the request and this receiver acts on the
-/// singleton scene once its environment is available. `openRevision` also
-/// makes repeated clicks bring an already-open window forward. Close requests
-/// pending from before the label appeared are not replayed: they targeted a
-/// window that no longer exists (the scene is never restored at launch).
+// Notification responses and hotkeys can arrive while the Monitor scene does
+// not exist, so the request is parked in MonitorWindowNavigation and replayed
+// here, at the always-mounted menu bar label. A pending close is deliberately
+// not replayed on appear: it targeted a window that no longer exists.
 private struct MonitorWindowRequestReceiver: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
@@ -445,32 +398,19 @@ private struct MonitorWindowRequestReceiver: View {
     }
 }
 
-/// Scene ID of the monitor window. Referenced by openWindow / dismissWindow.
 let monitorWindowId = "monitor"
 
-/// Outlives the `MenuBarExtra` label and advances the blink phase every 0.8
-/// seconds. A `task` attached to the label does not keep running after the
-/// conversion to a status item, so the App owns this clock. In non-blinking
-/// states, `blinkVisible` is not rewritten, so the menu bar is not periodically
-/// redrawn during quiet / working.
+// A `task` on the MenuBarExtra label stops running once the label is converted
+// into a status item, so the App owns the blink clock instead. Non-blinking
+// states leave blinkVisible untouched to avoid redrawing the menu bar.
 @Observable @MainActor
 final class MenuBarBlinkClock {
-    /// true is the visible phase. Stays true when not a blink target, before
-    /// start, and after stop.
     private(set) var blinkVisible = true
 
-    /// Fixed at init; the same interval is used when the task restarts.
     @ObservationIgnored private let phaseDuration: Duration
-    /// Reads the latest fleet-aggregate state on each tick. The clock itself
-    /// holds no aggregate state.
     @ObservationIgnored private let shouldBlink: @MainActor () -> Bool
-    /// nil before start or after stop. While non-nil, exactly one sleep loop is
-    /// owned.
     @ObservationIgnored private var task: Task<Void, Never>?
 
-    /// - Parameters:
-    ///   - phaseDuration: How long each visible/hidden phase is held.
-    ///   - shouldBlink: Whether the aggregate state at tick time is a blink target.
     init(
         phaseDuration: Duration = MenuBarIconPresentation.blinkPhaseDuration,
         shouldBlink: @escaping @MainActor () -> Bool
@@ -479,7 +419,6 @@ final class MenuBarBlinkClock {
         self.shouldBlink = shouldBlink
     }
 
-    /// Starts the blink tick. Duplicate calls keep the existing task.
     func start() {
         guard task == nil else { return }
         let phaseDuration = phaseDuration
@@ -500,8 +439,6 @@ final class MenuBarBlinkClock {
         }
     }
 
-    /// Stops the tick and returns to the visible phase. Used for task
-    /// cancellation at app termination.
     func stop() {
         task?.cancel()
         task = nil
@@ -509,31 +446,17 @@ final class MenuBarBlinkClock {
     }
 }
 
-/// The icon resident in the menu bar. This is Shepherd's primary display,
-/// representing the agents' state as a single circle:
-///   - blinking red ●: has blocked (awaiting input)
-///   - blinking green ●: has done (unviewed completion)
-///   - yellow ○: has working            - colorless ○: everyone idle
-///   - dashed ○: zero ready watch targets (including disconnected / protocol mismatch)
-/// All 5 states are custom-drawn on the same geometry (18pt canvas, 14pt outer
-/// diameter) so the circle's size never appears to change with state. SF Symbols
-/// are not used: in the menu bar they become template-rendered and lose their
-/// color, and their glyphs' visual size does not match the custom drawing
-/// either. Only the two colorless states use isTemplate = true so they follow
-/// the menu bar's light/dark appearance.
-/// Blinking is expressed by swapping in the fully transparent blinkHidden NSImage
-/// during the hidden phase. The MenuBarExtra label is converted into an
-/// NSStatusItem button, and changes to the view's opacity are not reflected in
-/// the status item's rendering, so blinking rides the same path — swapping the
-/// image content — that already demonstrably works for switching the state color.
-/// The per-state NSImages themselves are never rewritten, so AgentRow in the
-/// menu and monitor window stays static.
+// SF Symbols are template-rendered in the menu bar and lose their color, so all
+// five states are custom-drawn on one shared geometry. Only the colorless
+// states set isTemplate, so they alone follow the menu bar appearance.
+// The status item ignores changes to the view's opacity, so the hidden blink
+// phase swaps in a transparent image over the same path that already works for
+// switching color.
 struct MenuBarIcon: View {
     var store: FleetStore
     var blinkClock: MenuBarBlinkClock
-    /// Blink-enabled setting. Observes the same key as the Settings Toggle, so
-    /// switching it OFF returns to the circle display immediately without
-    /// waiting for the next tick.
+    // Observing the setting here, not just in the clock closure, makes turning
+    // blinking off restore the circle without waiting for the next tick.
     @AppStorage(MenuBarIconPresentation.blinkEnabledKey) private var blinkEnabled = true
 
     var body: some View {
@@ -546,8 +469,6 @@ struct MenuBarIcon: View {
             blinkEnabled: blinkEnabled,
             blinkVisible: blinkClock.blinkVisible
         ) {
-            // Even fully transparent, the canvas is identical, so the status
-            // item's width and click area remain.
             StatusIcons.blinkHidden
         } else {
             switch store.menuBarState {
@@ -566,20 +487,13 @@ struct MenuBarIcon: View {
     }
 }
 
-/// Blink rules used only by the menu bar status item.
-/// Visible and hidden alternate at 0.8 seconds per phase.
-/// Whether blinking itself is enabled is a user setting (blinkEnabledKey).
 enum MenuBarIconPresentation {
     static let blinkPhaseDuration: Duration = .milliseconds(800)
 
-    /// UserDefaults key for the blink setting. Written by SettingsView's Toggle
-    /// and read by MenuBarIcon (@AppStorage) and ShepherdApp's clock closure
-    /// (blinkEnabled(in:)).
     static let blinkEnabledKey = "MenuBarBlinkEnabled"
 
-    /// The saved blink setting. Unsaved (missing key) defaults to true
-    /// (blinking). Direct read for non-View contexts (the clock closure) where
-    /// @AppStorage is unavailable.
+    // Direct read for non-View contexts, where @AppStorage is unavailable.
+    // A missing key means blinking, matching the @AppStorage default.
     nonisolated static func blinkEnabled(in defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: blinkEnabledKey) as? Bool ?? true
     }
@@ -593,11 +507,6 @@ enum MenuBarIconPresentation {
         }
     }
 
-    /// true if this is a phase that draws the state circle, false if it is the
-    /// blink's hidden phase (swapping in the fully transparent image). When
-    /// blinkEnabled is false, and in non-blinking states, the shape shows
-    /// regardless of blinkVisible; only done / blocked with blinking enabled
-    /// follow the phase the timer rewrites.
     static func showsStatusShape(
         for state: MenuBarState,
         blinkEnabled: Bool,
@@ -607,10 +516,6 @@ enum MenuBarIconPresentation {
     }
 }
 
-/// Circle icons shared by the menu bar itself and the agent rows inside the
-/// menu. All states share the same geometry, so sizes line up wherever they are
-/// placed. The images are static; menu bar blinking is done by MenuBarIcon
-/// swapping in blinkHidden.
 enum StatusIcons {
     static let disconnected = circleImage(filled: false, dashed: true, template: true)
     static let quiet = circleImage(filled: false, template: true)
@@ -618,13 +523,10 @@ enum StatusIcons {
     static let done = circleImage(color: .systemGreen, filled: true)
     static let blocked = circleImage(color: .systemRed, filled: true)
 
-    /// Fully transparent image dedicated to the blink's hidden phase. Same 18pt
-    /// canvas as the other states, so swapping it in does not change the status
-    /// item's width or click area.
+    // Transparent rather than absent, and on the same canvas, so the hidden
+    // blink phase keeps the status item's width and click area.
     static let blinkHidden = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in true }
 
-    /// Per-agent status display. idle maps to the colorless ○, unknown to the
-    /// dashed ○.
     static func icon(for status: AgentStatus) -> NSImage {
         switch status {
         case .working: working
@@ -635,11 +537,8 @@ enum StatusIcons {
         }
     }
 
-    /// Draws a 14pt-outer-diameter circle centered on an 18pt canvas. Every
-    /// state first draws the same ring (line width 1.5, inset by half the line
-    /// width so the outer diameter matches); when filled, a filled dot with a
-    /// 1.5pt gap inside the ring is layered on top, forming a double circle
-    /// (equivalent to SF Symbols' circle.inset.filled).
+    // 14pt outer diameter on an 18pt canvas. The ring is inset by half the line
+    // width because NSBezierPath strokes centered on the path.
     private static func circleImage(
         color: NSColor = .black,
         filled: Bool,
@@ -657,8 +556,8 @@ enum StatusIcons {
             ring.lineWidth = lineWidth
             ring.stroke()
             if filled {
-                // Filled dot 1.5pt inside the ring's inner edge (outer diameter
-                // 14 - line width 1.5×2 = 11).
+                // Leaves a 1.5pt gap inside the ring, giving the double circle
+                // of SF Symbols' circle.inset.filled.
                 let dot = NSBezierPath(ovalIn: rect.insetBy(dx: 5, dy: 5))
                 color.setFill()
                 dot.fill()
@@ -666,21 +565,16 @@ enum StatusIcons {
             return true
         }
         image.isTemplate = template
-        // The stroke color can be appearance-dependent (statusWorking), and a
-        // cached bitmap would keep the color it was first drawn with after the
-        // system switches between light and dark. Redrawing one circle per
-        // display costs nothing.
+        // statusWorking is appearance-dependent, and a cached bitmap would keep
+        // the color it was first drawn with across a light/dark switch.
         image.cacheMode = .never
         return image
     }
 }
 
 extension NSColor {
-    /// Yellow of the working state, shared by the ○ marks and the status text.
-    /// systemYellow reads at about 1.5:1 against the light menu background, too
-    /// little for the caption-sized text beside the mark, so light appearance
-    /// deepens it to about 2.6:1. Dark appearance keeps systemYellow, which
-    /// already stands out there.
+    // systemYellow reads at about 1.5:1 on the light menu background, too low
+    // for caption-sized text, so light appearance deepens it to about 2.6:1.
     static let statusWorking = NSColor(name: "statusWorking") { appearance in
         appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             ? .systemYellow

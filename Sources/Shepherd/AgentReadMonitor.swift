@@ -1,38 +1,25 @@
-// Coordinates screen reads for one Herdr endpoint. The owning Store supplies
-// the endpoint-pinned AgentReadDataSource and forwards each successful
-// session.snapshot. Reads run in the background for every supported pane so
-// the excerpt cache is already filled when a menu or Monitor surface opens:
-// a pane is read when its snapshot status differs from the last scheduled
-// read's status, then re-read at the policy's interval while it stays working
-// or blocked. A pane whose viewport is scrolled above the buffer tail is not
-// read; the cached excerpt stays until the view returns to the tail. Every
-// read is reduced immediately to an AgentExcerptState; raw terminal text is
-// never retained.
+// Every screen observation is bracketed as agent.get -> agent.read ->
+// agent.get. The sandwich is not an atomic server transaction, so an
+// observation is used only when both AgentInfo values agree on pane, terminal,
+// agent, session, status, state-change sequence, and revision; that rejects
+// pane moves, occupant replacement, and ABA status transitions.
 //
-// The excerpt preference is consulted through the injected policy closure on
-// every snapshot tick rather than through a push API: a disabled tick cancels
-// in-flight reads and drops the cache, and the next enabled tick rebuilds it.
+// Protocol 19 does not relate pane_read.revision to agent.get.revision, and
+// Herdr 0.8.0 returns zero for every pane_read source, so the equal bracketing
+// agent.get revision is the only usable lifecycle revision. The pane revision
+// in a snapshot also does not advance per terminal write, which makes screen
+// changes invisible there: reads are driven by status changes plus a periodic
+// re-read instead.
 //
-// A screen observation is bracketed by agent.get -> agent.read -> agent.get.
-// Publication requires the same pane, terminal, canonical agent, native
-// session, agent status, state-change sequence, and agent.get revision on both
-// sides. Protocol 19 does not relate pane_read.revision to agent.get.revision;
-// Herdr 0.8.0 returns zero for every pane_read source. The equal bracketing
-// agent.get revision therefore supplies the extractor's lifecycle revision.
-// The sandwich is not an atomic server transaction, but these checks reject
-// pane moves, occupant replacement, and status ABA transitions. Late
-// completions are also guarded by a monitor epoch and per-record request token
-// because the socket client cannot cancel an in-progress POSIX read.
+// The socket client cannot cancel an in-progress POSIX read, so a late
+// completion is discarded through a monitor epoch and a per-record token
+// rather than by cancelling the request.
 
 import Foundation
 import Observation
 
-/// Read behavior derived from the excerpt preference for one snapshot tick.
 struct AgentReadPolicy {
-    /// false stops all reads and drops the excerpt cache.
     var isEnabled: Bool
-    /// Background re-read cadence for a pane whose status stays working or
-    /// blocked; a status change reads without waiting for it.
     var readInterval: Duration
 }
 
@@ -66,13 +53,9 @@ final class AgentReadMonitor {
         var requestToken: UInt64 = 0
         var task: Task<Void, Never>?
         var needsReadAfterCurrent = false
-        /// Snapshot status covered by the most recent scheduled read. nil
-        /// forces a read on the next snapshot tick; it marks a new record, a
-        /// failed or incoherent read, and a pending settled verification whose
-        /// follow-up read could not be self-scheduled.
+        // nil is the "read on the next tick" sentinel, set for a new record and
+        // whenever a read produced no usable evidence.
         var coveredStatus: AgentStatus?
-        /// When the most recent read was scheduled. Bounds the periodic
-        /// re-read of a pane whose status stays working or blocked.
         var lastReadStart: ContinuousClock.Instant?
 
         init(key: RecordKey, pane: Pane, machine: AgentExcerptMachine) {
@@ -88,9 +71,6 @@ final class AgentReadMonitor {
         var after: HerdrAgentInfo
     }
 
-    /// Per-pane state for supported records. Missing entries are loading: they
-    /// cover the interval before reconcile creates a record and the fresh
-    /// lifecycle after content caches are cleared.
     private(set) var excerptStates: [String: AgentExcerptState] = [:]
 
     @ObservationIgnored private let dataSource: AgentReadDataSource
@@ -102,8 +82,8 @@ final class AgentReadMonitor {
     @ObservationIgnored private var isSuspended = false
     @ObservationIgnored private var hasStopped = false
 
-    /// The default policy follows the app-wide excerpt preference; tests
-    /// inject a closure to pin enablement and cadence without UserDefaults.
+    // The preference is pulled through a closure on every tick rather than
+    // pushed, so tests can pin it without UserDefaults.
     init(
         dataSource: AgentReadDataSource,
         verificationDelay: Duration = .milliseconds(125),
@@ -119,12 +99,9 @@ final class AgentReadMonitor {
         self.policy = policy
     }
 
-    /// Reconciles the monitor with one successful endpoint snapshot.
-    ///
-    /// The owning Store calls this for every success, even when its display
-    /// snapshot is value-equal to the previous one. That repeated boundary is
-    /// what permits retry after a transient read failure and the second stable
-    /// settled read required by AgentExcerptMachine.
+    // The Store calls this on every successful snapshot, even a value-equal
+    // one. Those repeated ticks are what drive retry after a failed read and
+    // the second stable read AgentExcerptMachine needs.
     func update(panes: [Pane]) {
         latestPanes = panes.filter { pane in
             guard Store.shouldTrack(pane), let agentID = pane.agent else {
@@ -153,18 +130,14 @@ final class AgentReadMonitor {
         excerptStates[paneID] ?? .loading
     }
 
-    /// Invalidates screen-derived lifecycle state after endpoint loss.
-    ///
-    /// A reconnect may have missed a whole agent turn, so evidence gathered
-    /// before the loss cannot be related to the newly visible screen; the
-    /// records rebuild from the next successful snapshot.
+    // A reconnect may have missed a whole agent turn, so evidence from before
+    // the loss cannot be related to the screen that is visible now.
     func sourceUnavailable() {
         reset(clearLatestPanes: true)
     }
 
-    /// Cancels reads during system sleep. Values may remain mounted while the
-    /// system is asleep, but resume clears lifecycle evidence before reading:
-    /// agents on a remote host can finish whole turns while this Mac sleeps.
+    // Resume drops lifecycle evidence instead of continuing from it: an agent
+    // on a remote host can finish whole turns while this Mac sleeps.
     func suspend() {
         guard !isSuspended, !hasStopped else { return }
         isSuspended = true
@@ -196,9 +169,8 @@ final class AgentReadMonitor {
                   let machine = AgentExcerptMachine(agentID: key.agentID) else {
                 continue
             }
-            // Duplicate terminal IDs indicate an incoherent snapshot. Keeping
-            // only the first prevents one screen from being attributed to two
-            // visible rows until the next successful snapshot resolves it.
+            // A duplicate key means an incoherent snapshot; keeping the first
+            // stops one screen from being shown on two rows until it resolves.
             guard next[key] == nil else { continue }
 
             let record: Record
@@ -211,9 +183,8 @@ final class AgentReadMonitor {
                 excerptState = .loading
             }
             record.pane = pane
-            // State follows a stable terminal record across a pane move. A new
-            // Record with the same pane ID starts loading instead of inheriting
-            // the previous occupant's text.
+            // Text is carried by the terminal-keyed record, so it follows a
+            // pane move and a new occupant of the same pane ID starts loading.
             nextExcerptStates[pane.paneId] = excerptState
             next[key] = record
         }
@@ -229,22 +200,10 @@ final class AgentReadMonitor {
         records.values.forEach(scheduleFromSnapshot)
     }
 
-    /// Decides whether one snapshot tick reads this record's screen.
-    ///
-    /// A viewport scrolled above the buffer tail renders history: the CLI
-    /// keeps drawing its composer and new output at the tail while Herdr
-    /// shows rows above it, so a visible read would hand the extractor old
-    /// transcript rows as if they were current. Such a tick schedules
-    /// nothing and leaves coveredStatus untouched; a status change that
-    /// happens while scrolled therefore still triggers a read on the first
-    /// tick after the viewport returns to the tail.
-    ///
-    /// Herdr's pane revision does not advance for each terminal write, so
-    /// content changes are invisible in the snapshot itself. The triggers are:
-    /// a status change since the last scheduled read (including a cleared
-    /// coveredStatus after a failure) and the periodic re-read while the
-    /// status stays working or blocked.
     private func scheduleFromSnapshot(_ record: Record) {
+        // A scrolled viewport shows history while the CLI keeps drawing at the
+        // tail, so a visible read would pass old rows off as current. Leaving
+        // coveredStatus alone makes the first tick back at the tail read.
         if (record.pane.scrollOffsetFromBottom ?? 0) > 0 { return }
         let status = record.pane.agentStatus
         if record.coveredStatus != status {
@@ -328,8 +287,7 @@ final class AgentReadMonitor {
         let appliedCoherently = apply(transaction, to: record)
         record.task = nil
         if !appliedCoherently {
-            // An incoherent frame carries no extractor evidence; clearing the
-            // covered status makes the next snapshot tick read again instead
+            // No evidence was gathered, so read again on the next tick instead
             // of waiting for another status change.
             record.coveredStatus = nil
         }
@@ -341,14 +299,13 @@ final class AgentReadMonitor {
             if reason.allowsVerificationFollowUp {
                 schedule(record, reason: .verification)
             } else {
-                // A verification read cannot chain another one. Hand the
-                // still-pending candidate to the next snapshot tick.
+                // A verification read must not chain another one, so the
+                // pending candidate goes to the next snapshot tick.
                 record.coveredStatus = nil
             }
         }
     }
 
-    /// Returns true when the transaction supplied a coherent extractor frame.
     private func apply(_ transaction: Transaction, to record: Record) -> Bool {
         let before = transaction.before
         let read = transaction.read
@@ -384,8 +341,8 @@ final class AgentReadMonitor {
         }
 
         guard before.stateChangeSeq == after.stateChangeSeq else {
-            // Equal endpoint statuses can hide an ABA transition. A fresh
-            // machine is safer than relating this screen to the old turn.
+            // Equal statuses on both sides can still hide an ABA transition,
+            // and this screen would then belong to a turn already gone.
             resetMachine(record)
             return false
         }
@@ -430,10 +387,8 @@ final class AgentReadMonitor {
             before.agentSession == after.agentSession
     }
 
-    /// Projects one coherent extractor mutation into the row state. `keep`
-    /// preserves an already loaded line, including its diagnostic revision;
-    /// only a fresh loading record needs the machine's verification flag to
-    /// distinguish a pending second read from a completed empty observation.
+    // Only a still-loading row consults requiresVerificationRead: it is what
+    // separates a pending second read from a finished empty observation.
     private func apply(
         _ update: AgentExcerptUpdate,
         to record: Record
@@ -468,8 +423,7 @@ final class AgentReadMonitor {
 
     private func fail(_ record: Record) {
         record.task = nil
-        // Retry from the next snapshot tick rather than waiting for another
-        // status change.
+        // Retry on the next tick instead of waiting for a status change.
         record.coveredStatus = nil
         if record.needsReadAfterCurrent {
             record.needsReadAfterCurrent = false

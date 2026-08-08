@@ -1,13 +1,7 @@
-// Pins what a grabber drag does to the array behind the rows: the row lands in
-// the slot the pointer is over, and it takes exactly one move to get there.
+// move(fromOffsets:toOffset:) reads its destination in the pre-removal order, so a
+// downward move is off by one from the slot the pointer names.
 //
-// The destination arithmetic is the reason this file exists.
-// move(fromOffsets:toOffset:) reads its destination in the order from before the
-// row is lifted out, so a downward move is off by one from the slot the pointer
-// names, and that is invisible until a row is dragged past a neighbour.
-//
-// Frames here are laid out as four 20pt rows from y = 0, which puts their
-// centers at 10, 30, 50 and 70.
+// The rows are four 20pt frames from y = 0, so their centers are 10, 30, 50 and 70.
 
 import XCTest
 @testable import Shepherd
@@ -25,8 +19,7 @@ final class RowReorderTests: XCTestCase {
         }
         XCTAssertEqual(order.value, ["b", "a", "c", "d"])
 
-        // Same drag continuing to the last row, recomputed from where the rows
-        // were when it started.
+        // The same drag continues, so the frames are still the ones from beginDrag.
         reorder.dragMoved(to: 75) { source, destination in
             order.value.move(fromOffsets: source, toOffset: destination)
         }
@@ -48,8 +41,7 @@ final class RowReorderTests: XCTestCase {
         var moves = 0
 
         reorder.beginDrag("b", in: ids)
-        // Above b's own center but not past a's, so there is no boundary
-        // between the pointer and where b already is.
+        // 25 is above b's center but below a's, so the pointer is still in b's slot.
         reorder.dragMoved(to: 25) { source, destination in
             moves += 1
             order.value.move(fromOffsets: source, toOffset: destination)
@@ -58,8 +50,6 @@ final class RowReorderTests: XCTestCase {
         XCTAssertEqual(order.value, ids)
     }
 
-    /// A reorder whose rows have all been laid out, and a box holding the order
-    /// the moves apply to.
     private func laidOutList() -> (RowReorder<String>, Box) {
         let reorder = RowReorder<String>()
         for (index, id) in ids.enumerated() {

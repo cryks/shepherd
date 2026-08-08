@@ -1,31 +1,17 @@
-// Headless rendering of the README screenshots. Runs only when launched as
-// `Shepherd --render-screenshots <dir>`: it assembles the real MenuPanel with a
-// mock FleetStore, writes it out as PNGs, then exits the process. It depends on
-// no real herdr or SSH and never shows a window on screen, so a dev machine
-// and CI produce the same image (only font rendering differs by OS version).
-//
-// Data is pinned through the same injection points as the tests: the local and
-// remote Stores poll a scripted session.snapshot and read scripted terminal
-// screens, and the tunnel is a stub that always reports ready. FleetStore
-// runs the real polling and excerpt-extraction pipeline against those
-// fixtures, and rendering waits until every row's excerpt is published, so
-// the image shows what the extractor actually produces.
-//
-// The README has English and Japanese editions, so we toggle LanguageSetting
-// and write two images: menu-panel.png (English) and menu-panel-ja.png
-// (Japanese). The terminal fixtures are agent output, not UI copy, so the
-// excerpts stay identical across the two variants. Output PNGs are 2x the
-// logical size; the README pins the width to the logical size so edges stay
-// crisp on Retina displays.
+// Headless rendering of the README screenshots. It reaches no real herdr or
+// SSH and puts no window on screen, so a dev machine and CI produce the same
+// image apart from font rendering. The fixtures feed the real polling and
+// excerpt pipeline, so the image shows what the extractor actually produces.
+// The README has an English and a Japanese edition, hence the two variants,
+// and it pins the image width to the logical size, hence the 2x output.
 
 import AppKit
 import SwiftUI
 
 @MainActor
 enum ScreenshotRenderer {
-    /// If the command line contains `--render-screenshots <dir>`, writes the
-    /// screenshots and returns true. When true, the caller skips launching the
-    /// app and exits main.
+    // Returning true tells the caller to exit main instead of launching the
+    // app.
     static func runIfRequested() -> Bool {
         let arguments = CommandLine.arguments
         guard let flagIndex = arguments.firstIndex(of: "--render-screenshots") else {
@@ -42,9 +28,8 @@ enum ScreenshotRenderer {
     }
 
     private static func render(into directory: URL) {
-        // Initialize NSApplication so we can create an NSWindow. With
-        // .prohibited, no Dock icon or menu bar appears, and the window is
-        // never ordered front.
+        // An NSWindow needs NSApplication, and .prohibited keeps the Dock icon
+        // and the menu bar away.
         NSApplication.shared.setActivationPolicy(.prohibited)
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -52,12 +37,9 @@ enum ScreenshotRenderer {
             fatalError("出力ディレクトリ作成失敗: \(directory.path) \(error)")
         }
 
-        // Pin display settings so values left in the running environment's
-        // UserDefaults don't leak into the image: the local heading keeps its
-        // default wording, the rows and notifications follow the built-in
-        // templates rather than a layout edited on this machine, and the
-        // excerpt display — off by default while experimental — is on because
-        // the screenshots feature it.
+        // Pinned so the UserDefaults of the machine that runs this cannot leak
+        // into the image. Excerpts are off by default while experimental, but
+        // the screenshots feature them.
         LocalSectionTitleSetting.shared.style = .standard
         RowLayoutSetting.shared.layout = .default
         ExcerptSetting.shared.isEnabled = true
@@ -82,11 +64,10 @@ enum ScreenshotRenderer {
         store.stop()
     }
 
-    /// Spins the RunLoop until every listed row has a published excerpt. The
-    /// scripted reads resolve within a few ticks (the settled remote pane
-    /// needs its 125ms verification read); a miss means a fixture no longer
-    /// matches the extractor, and failing loudly beats shipping a screenshot
-    /// with a Loading placeholder.
+    // Scripted reads resolve within a few ticks; the settled remote pane still
+    // waits for its 125ms verification read. A timeout means a fixture no
+    // longer matches the extractor, and failing loudly beats shipping a
+    // screenshot with a Loading placeholder.
     private static func waitForExcerpts(
         _ store: FleetStore,
         paneIDs: [SourcePaneID]
@@ -105,11 +86,9 @@ enum ScreenshotRenderer {
         fatalError("excerpt が時間内に出揃いませんでした")
     }
 
-    /// Mock with 2 local workspaces + 1 remote host. The smallest configuration
-    /// that fits, in a single image, the three states working / blocked / done,
-    /// two brand marks (claude, codex), branch display, excerpts for a
-    /// streaming message, a permission question, and a completed reply, and
-    /// connection headings.
+    // Two local workspaces plus one remote host is the smallest set that fits
+    // all of working / blocked / done, both brand marks, the branch display,
+    // the three excerpt kinds, and the connection headings into one image.
     private static func makeStore() -> FleetStore {
         let localPanes = [
             Pane(
@@ -189,11 +168,10 @@ enum ScreenshotRenderer {
         )
     }
 
-    /// The herdr records the row and notification templates read, derived from
-    /// the same Pane and Workspace values the typed snapshot carries so the two
-    /// views of a fixture cannot drift apart. Only the fields the built-in
-    /// templates name are filled in; the branch is written into each workspace
-    /// record by AgentSnapshot from `branches`.
+    // The raw records the templates read. Deriving them from the same Pane and
+    // Workspace values the typed snapshot carries keeps the two views of a
+    // fixture from drifting apart. Only the fields the built-in templates name
+    // are present; AgentSnapshot adds the branch to each workspace record.
     private static func rawSnapshot(
         agents: [Pane],
         workspaces: [Workspace]
@@ -227,15 +205,14 @@ enum ScreenshotRenderer {
         )
     }
 
-    /// The tab a fixture pane sits in. Every herdr pane belongs to a tab, and
-    /// the fixtures give each pane one of its own.
+    // Every herdr pane belongs to a tab, so the fixtures give each one a tab
+    // of its own.
     private static func tabID(for pane: Pane) -> String {
         "tab-\(pane.paneId)"
     }
 
-    /// A Store whose snapshot poll and screen reads answer from fixtures. The
-    /// long poll interval keeps the initial fetch as the only one during
-    /// rendering; the excerpt reads it triggers run against `screens`.
+    // The long poll interval leaves the initial fetch as the only one during
+    // rendering.
     private static func endpointStore(
         snapshot: AgentSnapshot,
         branches: [String: String],
@@ -306,11 +283,10 @@ enum ScreenshotRenderer {
     private static func writePanelImage(store: FleetStore, to url: URL) {
         let hosting = NSHostingView(rootView: PanelScreenshot(store: store))
         hosting.appearance = NSAppearance(named: .aqua)
-        // An offscreen window that is never ordered front. MenuPanel determines
-        // its own height by capturing the list's actual size into @State via
-        // onGeometryChange, so a single standalone layout pass of the view does
-        // not settle the height. We mount it in a window and spin the RunLoop so
-        // the measured size feeds back and re-layout converges before drawing.
+        // MenuPanel sets its own height from the list size it captures into
+        // @State through onGeometryChange, so one standalone layout pass never
+        // settles. Mounting it in an offscreen window and spinning the RunLoop
+        // lets the measured size feed back until layout converges.
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 600, height: 900),
             styleMask: [.borderless],
@@ -353,9 +329,9 @@ private enum ScreenshotFixtureError: Error {
     case unknownPane(String)
 }
 
-/// Snapshot and terminal fixtures shared between the two language variants.
-/// The screens reproduce only the UI structure each extractor parses; the
-/// prose is invented for the shot.
+// Shared by both language variants: the screens are agent output, not UI copy.
+// They reproduce only the structure each extractor parses, and the prose is
+// invented for the shot.
 private enum Fixtures {
     static let remoteID = HerdrSourceID.remote(
         uuid: UUID(uuidString: "9D2A7A80-0000-4000-8000-000000000001")!
@@ -368,8 +344,7 @@ private enum Fixtures {
 
     static let remoteBranches = ["ws-webapp": "feature/checkout"]
 
-    /// Claude mid-turn: the newest prose block becomes the excerpt while the
-    /// spinner keeps running.
+    // The extractor takes the newest prose block while the spinner runs.
     static let claudeWorkingScreen = """
     ⏺ Bash(swift test --filter TunnelRetry)
       ⎿ All tests passed
@@ -385,8 +360,7 @@ private enum Fixtures {
       ? for shortcuts
     """
 
-    /// Codex approval form: the question above the choices becomes the
-    /// excerpt while the pane is blocked.
+    // The extractor takes the question above the choices.
     static let codexApprovalScreen = """
       Would you like to run the following command?
 
@@ -398,7 +372,7 @@ private enum Fixtures {
       Press enter to confirm or esc to cancel
     """
 
-    /// Claude after a completed turn: the final reply becomes the excerpt.
+    // The extractor takes the final reply of a completed turn.
     static let claudeCompletedScreen = """
     ⏺ Bash(swift test --filter PaymentFlow)
       ⎿ All tests passed
@@ -413,12 +387,11 @@ private enum Fixtures {
     """
 }
 
-/// Composition for the shot: MenuPanel placed on a panel-like surface. The real
-/// panel surface (material background and roughly 14pt rounded corners) is
-/// drawn by the OS as the MenuBarExtra's window, so headless rendering
-/// substitutes a background color + the same corner radius + a shadow. The
-/// outer padding is the margin that keeps the shadow from being clipped and is
-/// transparent in the exported PNG.
+// The OS draws the real panel surface (material background, about 14pt rounded
+// corners) as the MenuBarExtra window, which headless rendering never gets, so
+// the background color, corner radius, and shadow stand in for it. The outer
+// padding keeps the shadow from being clipped and stays transparent in the
+// exported PNG.
 private struct PanelScreenshot: View {
     let store: FleetStore
 
@@ -436,9 +409,8 @@ private struct PanelScreenshot: View {
     }
 }
 
-/// Stub tunnel that reports ready from creation. It launches no SSH process and
-/// satisfies only the path where MonitoredSource publishes the remote snapshot
-/// on the assumption that the tunnel is ready.
+// Ready from creation and starts no SSH process: it serves only the path where
+// MonitoredSource publishes the remote snapshot once the tunnel reports ready.
 @MainActor
 private final class StaticReadyTunnel: RemoteTunnelManaging {
     let configuration: RemoteSourceConfiguration

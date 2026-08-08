@@ -1,15 +1,3 @@
-// One-shot RPC layer over the herdr server's Unix socket. The wire format is
-// newline-delimited JSON: one response line is read per request line, and the
-// connection is closed after each RPC. socketPath accepts both the local
-// herdr's default socket and the per-endpoint socket that SSH forwards from the
-// remote socket. This layer does synchronous I/O on a background queue and
-// exposes an async API upward. read/write are capped at 10 seconds and a
-// response line at 4 MiB; it holds no UI state or poll cadence.
-//
-// The response line is also handed to the transform overload of request, so a
-// caller that needs the bytes makeDecoder() dropped or renamed can decode the
-// same line a second time instead of issuing another RPC.
-
 import Foundation
 
 enum HerdrClientError: Error {
@@ -24,20 +12,14 @@ enum HerdrClientError: Error {
 }
 
 enum Herdr {
-    /// Endpoint of the local default session. Remote sessions do not override
-    /// this path; RemoteTunnelManager passes a per-source temporary socket to
-    /// Store.live.
     static var defaultSocketPath: String {
         return NSHomeDirectory() + "/.config/herdr/herdr.sock"
     }
 
-    /// The socket API version this app is written against. When
-    /// session.snapshot's protocol differs from this, upper layers show the
-    /// gray icon.
+    // The socket API version this app was written against. Upper layers compare
+    // it with session.snapshot's protocol and warn on a difference.
     static let supportedProtocol = 19
 
-    /// One-shot RPC. Opens a connection per call, receives one response line,
-    /// then closes. Throws RPCError when the server returns an error line.
     static func request<R: Codable>(
         _ method: String,
         params: [String: Any] = [:],
@@ -49,13 +31,9 @@ enum Herdr {
         }
     }
 
-    /// One-shot RPC that also exposes the response line.
-    ///
-    /// `transform` runs on the background queue that performed the I/O, with the
-    /// result decoded through makeDecoder() and the whole response line as it
-    /// arrived (LF excluded). Errors it throws propagate to the caller
-    /// unchanged, as do RPCError from an error line, HerdrClientError from the
-    /// socket, and DecodingError from the envelope.
+    // transform also receives the raw response line so a caller that needs the
+    // bytes makeDecoder() dropped or renamed can decode it again instead of
+    // issuing a second RPC. It runs on the background queue that did the I/O.
     static func request<R: Codable, T>(
         _ method: String,
         params: [String: Any] = [:],
@@ -84,7 +62,6 @@ enum Herdr {
         }
     }
 
-    /// Writes one request line and returns the response line, LF excluded.
     private static func requestSync(
         _ method: String,
         params: [String: Any],
@@ -121,9 +98,8 @@ private func connectSocket(path: String, ioTimeout: TimeInterval) throws -> Int3
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else { throw HerdrClientError.socketFailed(errno) }
 
-    // Even if a remote tunnel teardown races with an RPC write, don't let
-    // SIGPIPE kill the whole app; surface it as writeFailed and return to the
-    // per-endpoint reconnect path.
+    // A tunnel teardown that races with an RPC write must not kill the app with
+    // SIGPIPE; report it as writeFailed and let the endpoint reconnect.
     var noSigPipe: Int32 = 1
     guard setsockopt(
         fd,
@@ -140,8 +116,8 @@ private func connectSocket(path: String, ioTimeout: TimeInterval) throws -> Int3
     var addr = sockaddr_un()
     addr.sun_family = sa_family_t(AF_UNIX)
     let bytes = Array(path.utf8)
-    // sun_path is fixed at 104 bytes. Paths under the home directory fit, but
-    // anything longer fails explicitly.
+    // sun_path is a fixed 104 bytes. Paths under the home directory fit; a
+    // longer one has to fail here rather than be silently truncated.
     guard bytes.count < MemoryLayout.size(ofValue: addr.sun_path) else {
         close(fd)
         throw HerdrClientError.pathTooLong
@@ -186,7 +162,7 @@ private func writeAll(_ fd: Int32, _ data: Data) throws {
     }
 }
 
-/// Reader that yields newline-delimited lines from an fd. Assumes blocking reads.
+// Blocking reads only; connectSocket's SO_RCVTIMEO is what bounds them.
 private final class LineReader {
     private let fd: Int32
     private let maximumLineBytes: Int
@@ -197,7 +173,6 @@ private final class LineReader {
         self.maximumLineBytes = maximumLineBytes
     }
 
-    /// Returns the next line (LF excluded). nil when the server has closed the connection.
     func readLine() throws -> Data? {
         while true {
             if let index = buffer.firstIndex(of: 0x0A) {

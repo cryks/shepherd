@@ -1,22 +1,12 @@
-// Pins Shepherd's protocol boundary to the subset of Herdr JSON it consumes.
-// The fixtures below mirror protocol 19 responses; unknown fields remain
-// outside Shepherd's model instead of being copied into display state.
-//
-// One session.snapshot response line feeds both decode passes: the typed models
-// through makeDecoder(), whose .convertFromSnakeCase gives them camelCase
-// properties, and HerdrRawSnapshot through a plain JSONDecoder, which is what
-// keeps `{herdr.agent.terminal_title_stripped}` and the hook-defined keys under
-// `tokens` addressable by the names herdr sent.
-
 import Darwin
 import Foundation
 import XCTest
 @testable import Shepherd
 
 final class HerdrProtocolTests: XCTestCase {
-    /// A `session.snapshot` response line as herdr writes it, including fields
-    /// no typed model reads (`tokens.jj_status`, `state_labels`) so the raw pass
-    /// has something the typed pass provably drops.
+    // A protocol 19 `session.snapshot` line as herdr writes it. It carries
+    // fields no typed model reads (`tokens.jj_status`, `state_labels`) so the
+    // raw pass has something the typed pass provably drops.
     private static let sessionSnapshotResponseLine = Data(
         #"""
         {
@@ -126,8 +116,8 @@ final class HerdrProtocolTests: XCTestCase {
         XCTAssertEqual(result.snapshot.agents.first?.revision, 7)
         XCTAssertEqual(result.snapshot.agents.first?.agentStatus, .blocked)
         XCTAssertEqual(result.snapshot.agents.first?.tokens?.agentKind, "primary")
-        // Viewport scroll arrives only in the panes records; the agents
-        // records decode without it and agentsWithScroll() joins by pane_id.
+        // herdr sends viewport scroll only in the panes records, so the agents
+        // records reach it through agentsWithScroll()'s join on pane_id.
         XCTAssertNil(result.snapshot.agents.first?.scrollOffsetFromBottom)
         XCTAssertEqual(
             result.snapshot.agentsWithScroll().first?.scrollOffsetFromBottom,
@@ -151,8 +141,8 @@ final class HerdrProtocolTests: XCTestCase {
         )
         XCTAssertEqual(text(agent, "state_labels.blocked"), "Waiting for you")
         XCTAssertEqual(text(agent, "tokens.jj_status"), "conflict")
-        // The camelCase spellings are what .convertFromSnakeCase would have
-        // produced. Their absence is what makes the raw pass worth running.
+        // The camelCase spellings are what the typed decoder's
+        // .convertFromSnakeCase produces, and templates cannot reach those.
         XCTAssertNil(agent["terminalTitleStripped"])
         XCTAssertNil(agent.value(at: "stateLabels.blocked".split(separator: ".")))
         XCTAssertNil(agent.value(at: "tokens.jjStatus".split(separator: ".")))
@@ -260,6 +250,7 @@ final class HerdrProtocolTests: XCTestCase {
         XCTAssertEqual(result.read.source, .visible)
         XCTAssertEqual(result.read.format, .text)
         XCTAssertEqual(result.read.text, "Implementing the preview\n")
+        // 2^53 + 1: a revision that a Double-backed decode would round away.
         XCTAssertEqual(result.read.revision, 9_007_199_254_740_993)
         XCTAssertFalse(result.read.truncated)
     }
@@ -321,7 +312,7 @@ final class HerdrProtocolTests: XCTestCase {
     }
 
     func testSchemaIncompatibleSnapshotErrorNamesServerProtocol() async throws {
-        // A numeric pane_id fails the typed decode of the agents array while
+        // The numeric pane_id fails the typed decode of the agents array while
         // the lenient raw pass still reads snapshot.protocol.
         let server = try TestAgentReadRPCServer(resultBodies: [
             [
@@ -370,7 +361,6 @@ final class HerdrProtocolTests: XCTestCase {
         }
     }
 
-    /// Value at a dotted path of a raw record, as a template would read it.
     private func text(_ record: JSONValue, _ path: String) -> String? {
         record.value(at: path.split(separator: "."))?.templateText
     }
@@ -411,7 +401,8 @@ private enum AgentReadProtocolTestError: Error {
     case write(Int32)
 }
 
-/// Scripted Unix socket server that records each one-shot Herdr RPC request.
+// Herdr answers one newline-terminated RPC per connection, so each scripted
+// response needs its own accept().
 private final class TestAgentReadRPCServer: @unchecked Sendable {
     let socketPath: String
 
@@ -439,6 +430,8 @@ private final class TestAgentReadRPCServer: @unchecked Sendable {
         }
         serverFileDescriptor = fileDescriptor
 
+        // Without SO_NOSIGPIPE a write to a client that already left raises
+        // SIGPIPE and takes the whole test process down.
         var noSigPipe: Int32 = 1
         _ = withUnsafePointer(to: &noSigPipe) { pointer in
             setsockopt(

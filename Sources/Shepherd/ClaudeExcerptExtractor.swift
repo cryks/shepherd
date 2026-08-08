@@ -1,8 +1,6 @@
-// Claude Code terminal grammar for AgentExcerptMachine. Claude renders prose
-// and tools with the same leading message glyph, while its alternate-screen
-// prompt and selection forms remain at the bottom. This parser rejects known
-// tool-shaped blocks; the newest surviving prose block is the agent's latest
-// visible message, which the shared state machine caches best-effort.
+// Claude marks prose and tool output with the same leading glyph, so blocks
+// can only be told apart by their shape: this parser rejects the tool-shaped
+// ones and takes the newest block that survives.
 
 import Foundation
 
@@ -33,9 +31,8 @@ enum ClaudeExcerptExtractor {
         "LSP",
     ]
 
-    /// The newest visible prose block, skipping tool blocks that follow it.
-    /// A tool batch whose `⎿` detail lines scrolled out of view can be
-    /// misclassified as prose; the cache self-corrects on a later read.
+    // A tool batch whose `⎿` detail lines scrolled out of view looks like
+    // prose here. The machine's cache self-corrects on a later read.
     static func latestResponse(in screen: ExcerptScreen) -> String? {
         for block in blocks(in: screen).reversed() where !isTool(block) {
             if let text = ExcerptText.compact(block.lines) {
@@ -45,12 +42,9 @@ enum ClaudeExcerptExtractor {
         return orphanHeadResponse(in: screen)
     }
 
-    /// A message longer than the viewport leaves only its continuation lines
-    /// on screen: the `⏺` head is above the top edge, so no block is parsed.
-    /// Those leading two-space-indented lines are the tail of the newest
-    /// message; the last paragraph before the first marker, rule, or composer
-    /// line carries its conclusion. Consulted only when no complete prose
-    /// block is visible, so a complete newer block always wins.
+    // A message taller than the viewport pushes its `⏺` head above the top
+    // edge, so blocks(in:) finds nothing. What is left at the top of the screen
+    // is the tail of that message, and its last paragraph holds the conclusion.
     private static func orphanHeadResponse(in screen: ExcerptScreen) -> String? {
         var paragraphs: [[String]] = []
         var paragraph: [String] = []
@@ -72,8 +66,8 @@ enum ClaudeExcerptExtractor {
         return ExcerptText.compact(tail)
     }
 
-    /// Prose continuation is indented exactly two spaces; tool detail lines
-    /// are deeper or start with a tree glyph, and chrome starts at column 0.
+    // Prose continuation is indented exactly two spaces; tool detail lines are
+    // deeper or start with a tree glyph, and chrome starts at column 0.
     private static func isOrphanProse(_ line: String) -> Bool {
         guard line.hasPrefix("  ") else { return false }
         let value = line.dropFirst(2)
@@ -90,8 +84,8 @@ enum ClaudeExcerptExtractor {
             .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
             .suffix(12)
         for line in footerLines.reversed() {
-            // Current Claude builds use a spinner footer with parenthesized
-            // duration/token metadata; older builds use the circle form below.
+            // Current builds draw the spinner footer; the "  ◯ " form below is
+            // for older builds still in use.
             if let summary = currentFooterActivity(line) {
                 return summary
             }
@@ -113,11 +107,10 @@ enum ClaudeExcerptExtractor {
         return nil
     }
 
-    // The line's fingerprint is the metadata pair `<elapsed> · ↓ <n> tokens`,
-    // which prose containing a spinner glyph and parentheses cannot reproduce.
-    // While the model is thinking, the footer appends transient segments after
-    // the token count (for example `· thought for 104s`); those carry no stable
-    // information and are not validated.
+    // The `<elapsed> · ↓ <n> tokens` pair is the fingerprint: prose that starts
+    // with a spinner glyph and ends in parentheses cannot reproduce it. While
+    // the model thinks, the footer appends further segments (for example
+    // `· thought for 104s`), so only the first two are checked.
     private static func currentFooterActivity(_ line: String) -> String? {
         let value = line.trimmingCharacters(in: .whitespaces)
         guard spinnerFrames.contains(where: { value.hasPrefix($0 + " ") }),
@@ -189,6 +182,8 @@ enum ClaudeExcerptExtractor {
         return ExcerptText.attentionPrompt(in: screen)
     }
 
+    // The transcript viewer and the model picker cover the transcript, so
+    // nothing on such a screen belongs to the conversation.
     static func isSuppressed(_ screen: ExcerptScreen) -> Bool {
         if isScrolledBack(screen) { return true }
         let nonEmptyLines = screen.lines
@@ -216,17 +211,14 @@ enum ClaudeExcerptExtractor {
         return isTranscriptViewer || isModelPicker
     }
 
-    /// While the viewport sits above the transcript tail, Claude draws a
-    /// horizontally centered indicator over the bottom transcript row:
-    /// "Jump to bottom (click) ↓", or "<n> new message(s) (click) ↓" when
-    /// rows arrived below the viewport. Such a screen shows history, and
-    /// the overlay replaces the characters it covers, so extraction would
-    /// both revive an old message and splice the indicator text into it.
-    ///
-    /// The bottom transcript row is the nearest non-empty row above the
-    /// rule that tops the composer box. Anchoring there keeps indicator
-    /// text quoted elsewhere in a message from matching; history prompt
-    /// echoes also start with "❯" but have no rule directly above them.
+    // Above the transcript tail, Claude centers "Jump to bottom (click) ↓" (or
+    // "<n> new messages (click) ↓") over the bottom transcript row. The screen
+    // shows history, and the indicator overwrites the characters under it, so
+    // extraction would revive an old message with the indicator spliced in.
+    //
+    // Matching only that one row keeps the same words, quoted inside a message,
+    // from counting. The composer is found by the rule directly above it:
+    // history prompt echoes also start with "❯" but have no such rule.
     private static func isScrolledBack(_ screen: ExcerptScreen) -> Bool {
         let lines = screen.lines
         guard let composer = lines.lastIndex(where: { $0.hasPrefix("❯") }),
@@ -242,8 +234,8 @@ enum ClaudeExcerptExtractor {
         return containsScrollbackIndicator(lines[bottomRow])
     }
 
-    /// The overlay can land mid-line with covered content resuming after
-    /// it, so the indicator is matched anywhere within the row.
+    // The indicator lands mid-row with the covered text resuming after it, so
+    // it is matched anywhere in the row rather than as a prefix.
     private static func containsScrollbackIndicator(_ line: String) -> Bool {
         if line.contains("Jump to bottom (click) ↓") { return true }
         guard let range = line.range(of: " new message") else { return false }

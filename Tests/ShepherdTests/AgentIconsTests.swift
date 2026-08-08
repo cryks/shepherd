@@ -1,12 +1,8 @@
-// Verifies the resolution contract for AgentMarks assets: bundled agents load in
-// both the mono and color styles, and an agent name without an asset resolves to
-// nil (the branch where AgentRow falls back to a text label).
-
 import XCTest
 @testable import Shepherd
 
 final class AgentIconsTests: XCTestCase {
-    /// Agent labels that ship a bundled mark PDF. Keep in sync with the contents of Resources/AgentMarks.
+    // Must match the PDFs in Resources/AgentMarks.
     private let bundledAgents = ["claude", "codex", "pi", "opencode", "omp"]
 
     @MainActor

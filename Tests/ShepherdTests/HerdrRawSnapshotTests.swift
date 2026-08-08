@@ -1,16 +1,9 @@
-// Pins numeric fidelity through the raw decode. herdr pane revisions run past
-// 2^53, where Double stops representing consecutive integers, so a value that
-// took the floating-point branch would come back one short and
-// `{herdr.agent.revision}` would name a revision that never existed.
-//
-// Not exercised here: key spelling and record indexing, which HerdrProtocolTests
-// pins on the full protocol fixture.
-
 import Foundation
 import XCTest
 @testable import Shepherd
 
 final class HerdrRawSnapshotTests: XCTestCase {
+    // herdr revisions run past 2^53, where a Double decode would come back one short.
     func testRevisionBeyondDoublePrecisionKeepsEveryDigit() throws {
         let responseLine = Data(
             #"""

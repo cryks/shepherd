@@ -1,26 +1,18 @@
-// Fixed synthetic agents the Display settings preview renders while "Sample" is
-// selected, so a user can tune templates with no herdr running and can see how
-// `[...]` groups behave: the codex pane has a branch and an excerpt, the claude
-// pane has neither and an empty terminal title.
+// Synthetic agents for the Display settings preview, so templates can be tuned
+// with no herdr running. The two panes differ on purpose: the codex pane has a
+// branch and an excerpt, the claude pane has neither and an empty terminal
+// title, which is what makes `[...]` group behavior visible.
 //
-// The sample is one whole `session.snapshot` response line, decoded the same two
-// ways the live path decodes it — makeDecoder() for the typed Pane values,
-// HerdrRawSnapshot.decode(responseLine:) for the verbatim records the templates
-// address. That keeps the sample honest about key names and value types instead
-// of hand-building both sides.
-//
-// The `branch` member of each workspace record is written into the literal here.
-// On the live path AgentSnapshot injects it from worktree.list; a synthetic
-// snapshot has no worktree.list to read, and `{herdr.workspace.branch}` must
-// still resolve.
+// The sample is a whole `session.snapshot` response line put through both live
+// decoders rather than hand-built values, so it cannot drift from the real key
+// names and value types.
 
 import Foundation
 
 @MainActor
 enum RowLayoutPreviewSample {
-    /// One sample row: the context its templates resolve against plus the
-    /// excerpt state that drives the reserved excerpt line. A nil state is how
-    /// the sample shows a pane with no excerpt support.
+    // A nil excerptState is how the sample shows a pane with no excerpt
+    // support.
     struct Entry: Identifiable {
         let context: AgentRowContext
         let excerptState: AgentExcerptState?
@@ -38,17 +30,17 @@ enum RowLayoutPreviewSample {
                 rawWorkspace: raw.workspaces[pane.workspaceId],
                 rawTab: tabID(of: rawAgent).flatMap { raw.tabs[$0] },
                 excerpt: excerpt?.text,
-                // The live value is suppressed while no remote is visible; the
-                // sample always names a source so the separator in
-                // `[{source} · ]` is visible.
+                // The live value is suppressed while no remote is visible, so
+                // the sample always names a source to keep the separator in
+                // `[{source} · ]` on screen.
                 sourceLabel: LocalSectionTitleSetting.defaultTitle
             ),
             excerptState: excerpt.map(AgentExcerptState.available)
         )
     }
 
-    /// Verbatim records addressed by `{herdr.agent.*}`, `{herdr.workspace.*}`,
-    /// and `{herdr.tab.*}` while the sample is shown.
+    // Verbatim records addressed by `{herdr.agent.*}`, `{herdr.workspace.*}`
+    // and `{herdr.tab.*}`.
     private static let raw: HerdrRawSnapshot =
         (try? HerdrRawSnapshot.decode(responseLine: responseLine)) ?? .empty
 
@@ -70,10 +62,13 @@ enum RowLayoutPreviewSample {
         return id
     }
 
-    /// Home directory of the person looking at the preview, so `{cwd_short}`
-    /// visibly collapses to `~` instead of showing a path that cannot match.
+    // The real home directory, so `{cwd_short}` visibly collapses to `~`
+    // instead of showing a path that can never match.
     private static let home = NSHomeDirectory()
 
+    // `branch` is written into the literal because the live path gets it from
+    // worktree.list, which a synthetic snapshot cannot supply, and
+    // `{herdr.workspace.branch}` still has to resolve.
     private static let responseLine = Data(
         """
         {

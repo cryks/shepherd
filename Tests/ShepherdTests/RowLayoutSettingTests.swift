@@ -1,14 +1,3 @@
-// Pins the storage contract of the row layout preference: an edited layout
-// survives a relaunch with its line order, per-side styles, and line counts
-// intact, an absent
-// key leaves storage untouched, and neither undecodable data nor a style name
-// this build does not know can cost the user more than the one side that names
-// it. Each test owns a UserDefaults suite, so nothing here reads or writes the
-// settings of the machine it runs on.
-//
-// Not exercised here: what the built-in layout renders (RowLayoutTests) and the
-// settings pane, which is a view over the same value.
-
 import Foundation
 import XCTest
 @testable import Shepherd
@@ -56,9 +45,8 @@ final class RowLayoutSettingTests: XCTestCase {
         let setting = RowLayoutSetting(defaults: defaults)
         setting.layout = edited
 
-        // Whole-value equality is the point: reordered lines, a leftStyle that
-        // came back on the right, or a per-agent entry that did not survive are
-        // each a failure this comparison names.
+        // One whole-value comparison catches reordered lines, a style that came
+        // back on the other side, and a per-agent entry that did not survive.
         XCTAssertEqual(RowLayoutSetting(defaults: defaults).layout, edited)
     }
 
@@ -111,8 +99,8 @@ final class RowLayoutSettingTests: XCTestCase {
         XCTAssertEqual(layout.lines.first?.left.source, "{title}")
     }
 
-    /// A layout stored before lines had a count, and a hand-edited count of 0,
-    /// both read as a single-line row.
+    // The first line is what builds before maxLines existed wrote; the second
+    // is what a hand edit can leave behind.
     @MainActor
     func testAbsentOrSubOneMaxLinesReadsAsOne() {
         let defaults = makeDefaults()
@@ -148,8 +136,8 @@ final class RowLayoutSettingTests: XCTestCase {
         XCTAssertEqual(layout.lines.map(\.maxLines), [1, 1])
     }
 
-    /// A body stored as one template was delivered with the excerpt after it,
-    /// so reading it as two lines keeps the banner saying what it did.
+    // Builds that stored one body template still appended the excerpt when
+    // delivering, so the second line is what keeps those banners unchanged.
     @MainActor
     func testASingleStoredBodyTemplateReadsWithAnExcerptLine() {
         let defaults = makeDefaults()
@@ -174,12 +162,12 @@ final class RowLayoutSettingTests: XCTestCase {
         )
     }
 
-    /// An isolated UserDefaults suite per test. The whole domain is removed at teardown.
+    // A suite per test keeps the machine's own settings out of reach.
     private func makeDefaults() -> UserDefaults {
         let suiteName = "RowLayoutSettingTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
-        // Pass only the Sendable suiteName to teardown; do not send the UserDefaults
-        // instance across the actor boundary (avoids SendingRisksDataRace).
+        // The teardown block captures the Sendable suiteName only; sending the
+        // UserDefaults instance itself raises SendingRisksDataRace.
         addTeardownBlock {
             UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
         }

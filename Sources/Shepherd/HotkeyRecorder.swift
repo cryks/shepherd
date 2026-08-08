@@ -1,11 +1,5 @@
-// Shortcut recorder control for the Hotkeys settings tab. Clicking the field
-// starts capturing: a local key monitor swallows the next key press and stores
-// it as a HotkeyCombo through the binding. While recording, held modifiers are
-// echoed live, Escape cancels, plain Delete clears the assignment, and any
-// modified key commits (subject to HotkeyCombo.isValidGlobalHotkey; invalid
-// presses are swallowed and capture continues). HotkeySetting.isSuspended is
-// raised for the duration so keys tried out here are not consumed by their
-// current system-wide registration.
+// Recording raises HotkeySetting.isSuspended so a combo tried out here is not
+// swallowed by its own system-wide registration.
 
 import AppKit
 import Carbon.HIToolbox
@@ -15,14 +9,11 @@ struct HotkeyRecorderField: View {
     @Binding var combo: HotkeyCombo?
 
     @State private var isRecording = false
-    /// Modifiers currently held during recording, echoed as a live preview.
     @State private var heldModifiers: NSEvent.ModifierFlags = []
-    /// Non-nil exactly while recording; removing it is what stops capture.
     @State private var keyMonitor: Any?
 
-    /// The four modifiers a hotkey can carry. NSEvent reports more flags
-    /// (fn, caps lock, device-dependent bits); everything else is ignored both
-    /// for the preview and for the recorded combo.
+    // The only four modifiers a hotkey can carry. NSEvent reports more flags
+    // (fn, caps lock, device-dependent bits) that have no Carbon equivalent.
     private static let consideredModifiers: NSEvent.ModifierFlags =
         [.command, .option, .control, .shift]
 
@@ -58,13 +49,13 @@ struct HotkeyRecorderField: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(tr("Remove shortcut", ja: "ショートカットを削除"))
-            // Hidden instead of conditionally inserted so assigning or
-            // clearing does not shift the field's horizontal position.
+            // Hidden rather than removed, so assigning or clearing does not
+            // shift the field sideways.
             .opacity(combo != nil && !isRecording ? 1 : 0)
             .disabled(combo == nil || isRecording)
         }
-        // The Settings window can close mid-recording; releasing the monitor
-        // here also drops isSuspended so registrations come back.
+        // The Settings window can close in the middle of recording, which
+        // would leave the monitor installed and the registrations suspended.
         .onDisappear { stopRecording() }
     }
 
@@ -115,9 +106,8 @@ struct HotkeyRecorderField: View {
         HotkeySetting.shared.isSuspended = false
     }
 
-    /// Consumes every key event while recording (returns nil) so presses do
-    /// not fall through to the window — typing into the recorder must not
-    /// trigger buttons or field editing behind it.
+    // Returning nil consumes the event: keys typed into the recorder must not
+    // reach the buttons and fields of the window behind it.
     private func handle(_ event: NSEvent) -> NSEvent? {
         switch event.type {
         case .flagsChanged:

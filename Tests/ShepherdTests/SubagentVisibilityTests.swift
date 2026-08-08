@@ -1,7 +1,3 @@
-// Verifies decoding of herdr's tokens metadata and the contract that AgentSnapshot
-// keeps only parent agents. No event stream or RPC is started; the tests cover
-// tracking decisions based on metadata presence in each list cycle.
-
 import XCTest
 @testable import Shepherd
 

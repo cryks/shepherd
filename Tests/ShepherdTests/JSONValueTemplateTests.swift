@@ -1,17 +1,3 @@
-// Pins which herdr values a template treats as EMPTY. A variable bound to a
-// JSON value renders that value's templateText and counts as empty when it has
-// none, so this file states both halves together: the text a scalar produces,
-// and whether that scalar satisfies a `{a|b}` alternative and keeps a `[...]`
-// group alive.
-//
-// The distinction that matters is between "no value" and "a value that looks
-// falsy": null, arrays, and objects have no single-line text and are empty,
-// `false` and `0` are ordinary text, and only the empty string is a string that
-// counts as empty.
-//
-// Not exercised here: the grammar itself (RowTemplateGrammarTests) and how a
-// dotted path reaches a value (HerdrProtocolTests).
-
 import XCTest
 @testable import Shepherd
 
@@ -22,7 +8,7 @@ final class JSONValueTemplateTests: XCTestCase {
         XCTAssertEqual(JSONValue.bool(true).templateText, "true")
         XCTAssertEqual(JSONValue.int(0).templateText, "0")
         XCTAssertEqual(JSONValue.int(-7).templateText, "-7")
-        // Integral doubles print without the ".0" a Double description carries.
+        // Not "3.0": a Double that holds an integer must print like the int form.
         XCTAssertEqual(JSONValue.double(3).templateText, "3")
         XCTAssertEqual(JSONValue.double(3.5).templateText, "3.5")
     }
