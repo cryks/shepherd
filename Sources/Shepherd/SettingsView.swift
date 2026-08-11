@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 let colorAgentIconsKey = "ColorAgentIcons"
@@ -173,6 +174,7 @@ private struct GeneralSettingsView: View {
     @Bindable private var language = LanguageSetting.shared
     @Bindable private var localTitle = LocalSectionTitleSetting.shared
     @Bindable private var excerpts = ExcerptSetting.shared
+    @Bindable private var notificationSounds = NotificationSoundSetting.shared
     @AppStorage(MenuBarIconPresentation.blinkEnabledKey) private var blinkMenuBarIcon = true
     @FocusState private var isLocalTitleFieldFocused: Bool
 
@@ -237,6 +239,26 @@ private struct GeneralSettingsView: View {
                         }
                     )
                 )
+                Picker(
+                    tr("Sound when blocked", ja: "入力待ち時の通知音"),
+                    selection: $notificationSounds.blockedSound
+                ) {
+                    soundChoiceOptions
+                }
+                .disabled(!notificationSettings.isEnabled)
+                .onChange(of: notificationSounds.blockedSound) { _, choice in
+                    Self.previewSound(choice)
+                }
+                Picker(
+                    tr("Sound when done", ja: "完了時の通知音"),
+                    selection: $notificationSounds.doneSound
+                ) {
+                    soundChoiceOptions
+                }
+                .disabled(!notificationSettings.isEnabled)
+                .onChange(of: notificationSounds.doneSound) { _, choice in
+                    Self.previewSound(choice)
+                }
                 if showsNotificationSystemWarning {
                     notificationSystemWarning
                 }
@@ -271,6 +293,22 @@ private struct GeneralSettingsView: View {
             // front, so clearing one turn later undoes it without racing it.
             DispatchQueue.main.async { isLocalTitleFieldFocused = false }
         }
+    }
+
+    @ViewBuilder private var soundChoiceOptions: some View {
+        Text(tr("None", ja: "なし")).tag(NotificationSoundChoice.none)
+        Text(tr("Default", ja: "デフォルト")).tag(NotificationSoundChoice.systemDefault)
+        Divider()
+        ForEach(NotificationSoundSetting.systemSoundNames, id: \.self) { name in
+            Text(verbatim: name).tag(NotificationSoundChoice.named(name))
+        }
+    }
+
+    // Named sounds only: the file behind the systemDefault notification sound
+    // is not exposed, so there is nothing to play for it.
+    private static func previewSound(_ choice: NotificationSoundChoice) {
+        guard case .named(let name) = choice else { return }
+        NSSound(named: name)?.play()
     }
 
     // The app preference stays on after macOS denies delivery, so this warning

@@ -278,6 +278,7 @@ struct ShepherdApp: App {
             }
         }
         attentionMonitor.start(enabled: notificationSettings.isEnabled)
+        Task { await notificationSettings.start() }
         store.start()
         menuBarBlinkClock.start()
         hotkeyCenter.start()

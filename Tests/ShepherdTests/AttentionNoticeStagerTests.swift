@@ -213,6 +213,7 @@ final class AttentionNoticeStagerTests: XCTestCase {
     ) -> AttentionNotice {
         AttentionNotice(
             id: notice.id,
+            kind: notice.kind,
             sourcePaneID: notice.sourcePaneID,
             threadIdentifier: notice.threadIdentifier,
             title: notice.title,
@@ -227,6 +228,7 @@ final class AttentionNoticeStagerTests: XCTestCase {
     ) -> AttentionNotice {
         AttentionNotice(
             id: AttentionNotificationID(rawValue: "attention.v1.test"),
+            kind: .blocked,
             sourcePaneID: paneID,
             threadIdentifier: "thread",
             title: title,

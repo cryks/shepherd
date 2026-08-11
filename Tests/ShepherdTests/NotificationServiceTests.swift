@@ -36,6 +36,25 @@ final class NotificationServiceTests: XCTestCase {
     }
 
     @MainActor
+    func testDeliveryAppliesTheSoundChosenForTheNoticeKind() async throws {
+        let client = RecordingNotificationCenterClient()
+        let doneSound = UNNotificationSound.default
+        var requestedKinds: [AttentionNoticeKind] = []
+        let center = AgentNotificationCenter(client: client) { kind in
+            requestedKinds.append(kind)
+            return kind == .done ? doneSound : nil
+        }
+
+        try await center.deliver(makeNotice(id: "attention.v1.done-agent", kind: .done))
+        try await center.deliver(makeNotice(id: "attention.v1.blocked-agent", kind: .blocked))
+
+        XCTAssertEqual(requestedKinds, [.done, .blocked])
+        XCTAssertEqual(client.addedRequests.count, 2)
+        XCTAssertEqual(client.addedRequests[0].content.sound, doneSound)
+        XCTAssertNil(client.addedRequests[1].content.sound)
+    }
+
+    @MainActor
     func testParserRejectsForeignMalformedAndMismatchedRequests() async throws {
         let client = RecordingNotificationCenterClient()
         let center = AgentNotificationCenter(client: client)
@@ -116,14 +135,14 @@ final class NotificationServiceTests: XCTestCase {
     }
 
     @MainActor
-    func testAuthorizationRequestsOnlyAlertsAndReturnsLatestSettings() async throws {
+    func testAuthorizationRequestsAlertsWithSoundAndReturnsLatestSettings() async throws {
         let client = RecordingNotificationCenterClient()
         client.settings = .authorized
         let center = AgentNotificationCenter(client: client)
 
         let settings = try await center.requestAuthorization()
 
-        XCTAssertEqual(client.authorizationOptions, [[.alert]])
+        XCTAssertEqual(client.authorizationOptions, [[.alert, .sound]])
         XCTAssertEqual(settings, .authorized)
     }
 
@@ -171,7 +190,7 @@ final class NotificationServiceTests: XCTestCase {
         XCTAssertTrue(coordinator.isEnabled)
         XCTAssertTrue(defaults.bool(forKey: NotificationSettingsCoordinator.enabledKey))
         XCTAssertEqual(enabledChanges, [true])
-        XCTAssertEqual(client.authorizationOptions, [[.alert]])
+        XCTAssertEqual(client.authorizationOptions, [[.alert, .sound]])
         XCTAssertEqual(coordinator.systemSettings.authorizationStatus, .denied)
         XCTAssertNil(coordinator.authorizationError)
     }
@@ -254,6 +273,43 @@ final class NotificationServiceTests: XCTestCase {
     }
 
     @MainActor
+    func testStartReRequestsAuthorizationForPersistedEnabledSwitch() async {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(true, forKey: NotificationSettingsCoordinator.enabledKey)
+        let client = RecordingNotificationCenterClient()
+        client.settings = .authorized
+        let center = AgentNotificationCenter(client: client)
+        let coordinator = NotificationSettingsCoordinator(
+            defaults: defaults,
+            notificationCenter: center,
+            onEnabledChange: { _ in }
+        )
+
+        await coordinator.start()
+
+        XCTAssertEqual(client.authorizationOptions, [[.alert, .sound]])
+        XCTAssertEqual(coordinator.systemSettings, .authorized)
+    }
+
+    @MainActor
+    func testStartDoesNotRequestAuthorizationWhileDisabled() async {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let client = RecordingNotificationCenterClient()
+        let center = AgentNotificationCenter(client: client)
+        let coordinator = NotificationSettingsCoordinator(
+            defaults: defaults,
+            notificationCenter: center,
+            onEnabledChange: { _ in }
+        )
+
+        await coordinator.start()
+
+        XCTAssertEqual(client.authorizationOptions, [])
+    }
+
+    @MainActor
     func testCoordinatorRefreshesSettingsAndOpensNotificationsPane() async {
         let (defaults, suiteName) = makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -280,9 +336,13 @@ final class NotificationServiceTests: XCTestCase {
     }
 
     @MainActor
-    private func makeNotice(id: String) -> AttentionNotice {
+    private func makeNotice(
+        id: String,
+        kind: AttentionNoticeKind = .blocked
+    ) -> AttentionNotice {
         AttentionNotice(
             id: AttentionNotificationID(rawValue: id),
+            kind: kind,
             sourcePaneID: SourcePaneID(sourceID: .local, paneID: "w1:p1"),
             threadIdentifier: "source:remote-alpha",
             title: "🔴 Fix authentication",

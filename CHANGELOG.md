@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+
+- Notifications can play a sound, chosen separately for blocked and done
+  agents.
+
 ### Fixed
 
 - Status labels sit centered beside the heading instead of above it.

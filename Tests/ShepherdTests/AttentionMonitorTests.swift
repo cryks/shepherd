@@ -59,6 +59,7 @@ final class AttentionMonitorTests: XCTestCase {
         XCTAssertEqual(blockedNotice.title, "Implement alerts")
         XCTAssertEqual(blockedNotice.subtitle, "Laptop · Shepherd")
         XCTAssertEqual(blockedNotice.body, "codex · feature/alerts")
+        XCTAssertEqual(blockedNotice.kind, .blocked)
         XCTAssertTrue(blockedNotice.id.rawValue.hasPrefix(AttentionNotificationID.managedPrefix))
 
         let done = source(
@@ -71,6 +72,7 @@ final class AttentionMonitorTests: XCTestCase {
         )
         let doneNotice = try deliveredNotice(machine.ingest(fleet(done)))
         XCTAssertEqual(doneNotice.id, blockedNotice.id)
+        XCTAssertEqual(doneNotice.kind, .done)
 
         let renamed = source(
             status: .done,

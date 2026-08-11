@@ -38,10 +38,18 @@ struct AttentionAgentLocator: Hashable, Sendable {
     let target: Target
 }
 
+// The attention states worth alerting about, kept apart so delivery can pick
+// a different sound per state.
+enum AttentionNoticeKind: Equatable, Sendable {
+    case blocked
+    case done
+}
+
 // The three strings are fully rendered from the user's templates, so the
 // delivery layer adds no text of its own.
 struct AttentionNotice: Equatable, Sendable {
     let id: AttentionNotificationID
+    let kind: AttentionNoticeKind
     // Only for looking up the pane's excerpt before delivery. It is never
     // persisted in the notification payload, because a click re-resolves the
     // current pane through destination(for:).
@@ -53,6 +61,7 @@ struct AttentionNotice: Equatable, Sendable {
 
     init(
         id: AttentionNotificationID,
+        kind: AttentionNoticeKind,
         sourcePaneID: SourcePaneID,
         threadIdentifier: String,
         title: String,
@@ -60,6 +69,7 @@ struct AttentionNotice: Equatable, Sendable {
         body: String
     ) {
         self.id = id
+        self.kind = kind
         self.sourcePaneID = sourcePaneID
         self.threadIdentifier = threadIdentifier
         self.title = title
@@ -161,6 +171,7 @@ struct AttentionFleetObservation: Equatable {
         }
         return AttentionNotice(
             id: notice.id,
+            kind: notice.kind,
             sourcePaneID: notice.sourcePaneID,
             threadIdentifier: notice.threadIdentifier,
             title: fields.title,
@@ -556,6 +567,7 @@ struct AttentionStateMachine {
     ) -> AttentionNotice {
         AttentionNotice(
             id: id,
+            kind: agent.pane.agentStatus == .done ? .done : .blocked,
             sourcePaneID: SourcePaneID(
                 sourceID: sourceID,
                 paneID: agent.pane.paneId

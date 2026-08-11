@@ -17,9 +17,8 @@ private let notificationLog = Logger(
     category: "notifications"
 )
 
-// Sendable mirror of UNNotificationSettings. Sound and time-sensitive fields are
-// left out because agent notifications are silent, use the active interruption
-// level, and respect Focus. Each `unknown` case absorbs a state macOS may add.
+// Sendable mirror of UNNotificationSettings, reduced to the fields the settings
+// UI reads. Each `unknown` case absorbs a state macOS may add.
 struct NotificationSystemSettings: Equatable, Sendable {
     enum AuthorizationStatus: Equatable, Sendable {
         case notDetermined
@@ -179,6 +178,9 @@ final class AgentNotificationCenter {
     private nonisolated static let notificationIDKey = "shepherd.notification-id"
 
     private let client: any UserNotificationCenterClient
+    // Read at delivery time, not at staging, so a banner held for its excerpt
+    // still plays the sound the user has selected by then.
+    private let sound: @MainActor (AttentionNoticeKind) -> UNNotificationSound?
 
     // IDs submitted by this process, kept so termination cleanup needs no
     // asynchronous query; a crash instead leaves them to the startup removeAll.
@@ -192,18 +194,24 @@ final class AgentNotificationCenter {
     private var isTerminating = false
 
     convenience init() {
-        self.init(client: SystemUserNotificationCenterClient())
+        self.init(client: SystemUserNotificationCenterClient()) {
+            NotificationSoundSetting.shared.choice(for: $0).notificationSound
+        }
     }
 
-    init(client: any UserNotificationCenterClient) {
+    init(
+        client: any UserNotificationCenterClient,
+        sound: @escaping @MainActor (AttentionNoticeKind) -> UNNotificationSound? = { _ in nil }
+    ) {
         self.client = client
+        self.sound = sound
     }
 
-    // Alerts only: agent notifications never use sound, badge, time-sensitive, or
-    // critical capabilities. Settings are re-read afterwards so a denial and a
+    // Alerts and sound only: agent notifications never use badge, time-sensitive,
+    // or critical capabilities. Settings are re-read afterwards so a denial and a
     // later system change arrive through the same value.
     func requestAuthorization() async throws -> NotificationSystemSettings {
-        _ = try await client.requestAuthorization(options: [.alert])
+        _ = try await client.requestAuthorization(options: [.alert, .sound])
         return await systemSettings()
     }
 
@@ -268,7 +276,7 @@ final class AgentNotificationCenter {
             Self.kindKey: Self.payloadKind,
             Self.notificationIDKey: notice.id.rawValue,
         ]
-        content.sound = nil
+        content.sound = sound(notice.kind)
         content.interruptionLevel = .active
 
         let request = UNNotificationRequest(
@@ -409,6 +417,17 @@ final class NotificationSettingsCoordinator {
         isEnabled = defaults.object(forKey: Self.enabledKey) as? Bool ?? false
     }
 
+    // Sound joined the requested authorization options after installs were
+    // already authorized for alerts alone, and such a grant never shows the
+    // sound toggle in System Settings until it is requested once more. macOS
+    // extends a determined authorization without prompting again, so this is
+    // safe on every launch.
+    func start() async {
+        guard isEnabled else { return }
+        enablementGeneration &+= 1
+        await authorize(generation: enablementGeneration)
+    }
+
     // The choice is persisted before any system call so a denial cannot rewrite
     // it. Turning OFF then waits for the removeAll that onEnabledChange caused
     // AttentionMonitor to emit, which is what makes the switch settle silently.
@@ -421,21 +440,25 @@ final class NotificationSettingsCoordinator {
         onEnabledChange(enabled)
 
         if enabled {
-            do {
-                let settings = try await notificationCenter.requestAuthorization()
-                guard generation == enablementGeneration else { return }
-                systemSettings = settings
-                authorizationError = nil
-            } catch {
-                let settings = await notificationCenter.systemSettings()
-                guard generation == enablementGeneration else { return }
-                authorizationError = error.localizedDescription
-                systemSettings = settings
-            }
+            await authorize(generation: generation)
         } else {
             await notificationCenter.waitForPendingEffects()
             guard generation == enablementGeneration else { return }
             authorizationError = nil
+        }
+    }
+
+    private func authorize(generation: UInt64) async {
+        do {
+            let settings = try await notificationCenter.requestAuthorization()
+            guard generation == enablementGeneration else { return }
+            systemSettings = settings
+            authorizationError = nil
+        } catch {
+            let settings = await notificationCenter.systemSettings()
+            guard generation == enablementGeneration else { return }
+            authorizationError = error.localizedDescription
+            systemSettings = settings
         }
     }
 
