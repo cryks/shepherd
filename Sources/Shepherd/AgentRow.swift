@@ -114,6 +114,7 @@ struct AgentRow: View {
 
     @State private var isHovered = false
     @AppStorage(colorAgentIconsKey) private var colorAgentIcons = false
+    @Environment(\.colorScheme) private var colorScheme
 
     init(
         context: AgentRowContext,
@@ -302,17 +303,20 @@ struct AgentRow: View {
         }
     }
 
-    // The mono asset is solid black, so it is drawn as a template to follow the
-    // line color and dark mode; color keeps the brand hues. An agent with no
-    // asset draws nothing, because the resolver already reported it empty and a
-    // `{agent_icon|…}` fallback has taken over.
+    // Template follows the line color. Original keeps the brand hues. An
+    // agent with no asset draws nothing, because the resolver already
+    // reported it empty and a `{agent_icon|…}` fallback has taken over.
     @ViewBuilder
     private func agentIcon(_ agent: String, style: RowTextStyle) -> some View {
         let iconStyle: AgentIconStyle = colorAgentIcons ? .color : .mono
         if let mark = AgentIcons.icon(for: agent, style: iconStyle) {
             let size = Self.iconSize(for: style)
+            let template = iconStyle.usesTemplate(
+                agent: agent,
+                appearanceIsDark: colorScheme == .dark
+            )
             Image(nsImage: mark)
-                .renderingMode(iconStyle == .mono ? .template : .original)
+                .renderingMode(template ? .template : .original)
                 .resizable()
                 .scaledToFit()
                 .frame(width: size, height: size)

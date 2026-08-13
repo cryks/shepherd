@@ -9,6 +9,17 @@ import AppKit
 enum AgentIconStyle: String {
     case mono
     case color
+
+    func usesTemplate(agent: String, appearanceIsDark: Bool) -> Bool {
+        switch self {
+        case .mono:
+            return true
+        case .color:
+            // Grok's color mark is black ink. Original drawing vanishes on a
+            // dark panel, so follow the (light) text color there.
+            return appearanceIsDark && agent == "grok"
+        }
+    }
 }
 
 @MainActor

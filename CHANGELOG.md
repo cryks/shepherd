@@ -6,6 +6,7 @@
 
 - Notifications can play a sound, chosen separately for blocked and done
   agents.
+- Agent icons include Grok.
 
 ### Fixed
 
