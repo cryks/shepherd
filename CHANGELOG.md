@@ -8,6 +8,10 @@
   agents.
 - Agent icons include Grok.
 
+### Changed
+
+- Supports herdr protocol 20.
+
 ### Fixed
 
 - Status labels sit centered beside the heading instead of above it.

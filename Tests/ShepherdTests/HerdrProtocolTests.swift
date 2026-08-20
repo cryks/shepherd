@@ -4,7 +4,7 @@ import XCTest
 @testable import Shepherd
 
 final class HerdrProtocolTests: XCTestCase {
-    // A protocol 19 `session.snapshot` line as herdr writes it. It carries
+    // A protocol 20 `session.snapshot` line as herdr writes it. It carries
     // fields no typed model reads (`tokens.jj_status`, `state_labels`) so the
     // raw pass has something the typed pass provably drops.
     private static let sessionSnapshotResponseLine = Data(
@@ -14,8 +14,8 @@ final class HerdrProtocolTests: XCTestCase {
           "result": {
             "type": "session_snapshot",
             "snapshot": {
-              "version": "0.8.0",
-              "protocol": 19,
+              "version": "0.8.2",
+              "protocol": 20,
               "focused_workspace_id": "w1",
               "focused_tab_id": "w1:t1",
               "focused_pane_id": "w1:p1",
@@ -81,7 +81,7 @@ final class HerdrProtocolTests: XCTestCase {
                   "terminal_id": "terminal-1",
                   "focused": true,
                   "revision": 7,
-                  "terminal_title_stripped": "Implement protocol 19",
+                  "terminal_title_stripped": "Implement protocol 20",
                   "launch_pending": false,
                   "interactive_ready": true,
                   "state_change_seq": 42,
@@ -101,14 +101,14 @@ final class HerdrProtocolTests: XCTestCase {
         """#.utf8
     )
 
-    func testDecodesProtocol19SessionSnapshotSubset() throws {
+    func testDecodesProtocol20SessionSnapshotSubset() throws {
         let response = try makeDecoder().decode(
             RPCResponse<SessionSnapshotResult>.self,
             from: Self.sessionSnapshotResponseLine
         )
         let result = try XCTUnwrap(response.result)
 
-        XCTAssertEqual(Herdr.supportedProtocol, 19)
+        XCTAssertEqual(Herdr.supportedProtocol, 20)
         XCTAssertEqual(result.snapshot.protocolVersion, Herdr.supportedProtocol)
         XCTAssertEqual(result.snapshot.workspaces.first?.workspaceId, "w1")
         XCTAssertEqual(result.snapshot.agents.first?.paneId, "w1:p1")
@@ -137,7 +137,7 @@ final class HerdrProtocolTests: XCTestCase {
         let agent = try XCTUnwrap(raw.agents["w1:p1"])
         XCTAssertEqual(
             agent["terminal_title_stripped"]?.templateText,
-            "Implement protocol 19"
+            "Implement protocol 20"
         )
         XCTAssertEqual(text(agent, "state_labels.blocked"), "Waiting for you")
         XCTAssertEqual(text(agent, "tokens.jj_status"), "conflict")
@@ -151,7 +151,7 @@ final class HerdrProtocolTests: XCTestCase {
         XCTAssertEqual(raw.tabs["w1:t1"]?["label"]?.templateText, "agent")
     }
 
-    func testDecodesProtocol19AgentInfoWithNativeSessionIdentity() throws {
+    func testDecodesProtocol20AgentInfoWithNativeSessionIdentity() throws {
         let json = Data(
             #"""
             {
@@ -223,7 +223,7 @@ final class HerdrProtocolTests: XCTestCase {
         XCTAssertNil(result.agent.agentSession)
     }
 
-    func testDecodesProtocol19PaneReadResult() throws {
+    func testDecodesProtocol20PaneReadResult() throws {
         let json = Data(
             #"""
             {
