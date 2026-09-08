@@ -1,4 +1,4 @@
-// Decoding of the herdr socket API (protocol 20) assumes
+// Decoding of the herdr socket API (protocol 22) assumes
 // keyDecodingStrategy = .convertFromSnakeCase; unknown keys are ignored.
 //
 // These types hold only the fields the app reasons about. A field that exists
@@ -174,7 +174,7 @@ struct HerdrAgentSession: Codable, Equatable, Sendable {
     var value: String
 }
 
-// The protocol 20 subset of `AgentInfo` needed to bracket an `agent.read`:
+// The protocol 22 subset of `AgentInfo` needed to bracket an `agent.read`:
 // callers compare the values before and after the read so a status transition or
 // an occupant swap cannot be presented as one coherent observation.
 struct HerdrAgentInfo: Codable, Equatable, Sendable {
@@ -265,8 +265,8 @@ struct PaneRead: Codable, Equatable, Sendable {
     var source: Source
     var format: Format
     var text: String
-    // Unusable for correlation: herdr 0.8.2 hard-codes zero for every source,
-    // and protocol 20 defines no relation to AgentInfo.revision.
+    // Unusable for correlation: herdr 0.9.0 hard-codes zero for every source,
+    // and protocol 22 defines no relation to AgentInfo.revision.
     var revision: UInt64
     // True when herdr dropped bytes at its response limit.
     var truncated: Bool

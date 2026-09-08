@@ -18,7 +18,7 @@ enum Herdr {
 
     // The socket API version this app was written against. Upper layers compare
     // it with session.snapshot's protocol and warn on a difference.
-    static let supportedProtocol = 20
+    static let supportedProtocol = 22
 
     static func request<R: Codable>(
         _ method: String,

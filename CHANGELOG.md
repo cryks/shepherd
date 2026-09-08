@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.17.0 - 2026-09-08
+
+### Changed
+
+- Supports herdr 0.9.0 (protocol 22).
+
 ## v0.16.0 - 2026-08-20
 
 ### Added

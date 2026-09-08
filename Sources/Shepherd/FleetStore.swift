@@ -383,7 +383,7 @@ struct LocalAgentFocus {
         self.focus = focus
     }
 
-    // request gets the pane ID, not a terminal ID: protocol 20 agent methods
+    // request gets the pane ID, not a terminal ID: protocol 22 agent methods
     // reject terminal IDs.
     init(
         request: @escaping @MainActor (_ target: String) async throws -> Void,

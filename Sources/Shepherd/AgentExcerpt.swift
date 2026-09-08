@@ -32,7 +32,7 @@ struct AgentExcerptInput: Equatable {
     var statusBeforeRead: AgentStatus
     var statusAfterRead: AgentStatus
     // Pane-lifecycle marker the caller derives from equal bracketing
-    // `agent.get` revisions: protocol 20 does not relate `pane_read.revision`
+    // `agent.get` revisions: protocol 22 does not relate `pane_read.revision`
     // to that value.
     var revision: UInt64
     // Plain text with ANSI control sequences already removed.

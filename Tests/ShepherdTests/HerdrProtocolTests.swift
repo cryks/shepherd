@@ -4,7 +4,7 @@ import XCTest
 @testable import Shepherd
 
 final class HerdrProtocolTests: XCTestCase {
-    // A protocol 20 `session.snapshot` line as herdr writes it. It carries
+    // A protocol 22 `session.snapshot` line as herdr writes it. It carries
     // fields no typed model reads (`tokens.jj_status`, `state_labels`) so the
     // raw pass has something the typed pass provably drops.
     private static let sessionSnapshotResponseLine = Data(
@@ -14,8 +14,8 @@ final class HerdrProtocolTests: XCTestCase {
           "result": {
             "type": "session_snapshot",
             "snapshot": {
-              "version": "0.8.2",
-              "protocol": 20,
+              "version": "0.9.0",
+              "protocol": 22,
               "focused_workspace_id": "w1",
               "focused_tab_id": "w1:t1",
               "focused_pane_id": "w1:p1",
@@ -25,7 +25,7 @@ final class HerdrProtocolTests: XCTestCase {
                   "label": "Shepherd",
                   "number": 1,
                   "focused": true,
-                  "pane_count": 1,
+                  "pane_count": 2,
                   "tab_count": 1,
                   "active_tab_id": "w1:t1",
                   "agent_status": "blocked"
@@ -37,6 +37,9 @@ final class HerdrProtocolTests: XCTestCase {
                   "workspace_id": "w1",
                   "label": "agent",
                   "number": 1,
+                  "focused": true,
+                  "pane_count": 2,
+                  "agent_status": "blocked",
                   "active_pane_id": "w1:p1"
                 }
               ],
@@ -62,6 +65,7 @@ final class HerdrProtocolTests: XCTestCase {
                   "workspace_id": "w1",
                   "tab_id": "w1:t1",
                   "focused": false,
+                  "agent_status": "idle",
                   "scroll": {
                     "offset_from_bottom": 0,
                     "max_offset_from_bottom": 0,
@@ -81,7 +85,7 @@ final class HerdrProtocolTests: XCTestCase {
                   "terminal_id": "terminal-1",
                   "focused": true,
                   "revision": 7,
-                  "terminal_title_stripped": "Implement protocol 20",
+                  "terminal_title_stripped": "Implement protocol 22",
                   "launch_pending": false,
                   "interactive_ready": true,
                   "state_change_seq": 42,
@@ -101,14 +105,14 @@ final class HerdrProtocolTests: XCTestCase {
         """#.utf8
     )
 
-    func testDecodesProtocol20SessionSnapshotSubset() throws {
+    func testDecodesProtocol22SessionSnapshotSubset() throws {
         let response = try makeDecoder().decode(
             RPCResponse<SessionSnapshotResult>.self,
             from: Self.sessionSnapshotResponseLine
         )
         let result = try XCTUnwrap(response.result)
 
-        XCTAssertEqual(Herdr.supportedProtocol, 20)
+        XCTAssertEqual(Herdr.supportedProtocol, 22)
         XCTAssertEqual(result.snapshot.protocolVersion, Herdr.supportedProtocol)
         XCTAssertEqual(result.snapshot.workspaces.first?.workspaceId, "w1")
         XCTAssertEqual(result.snapshot.agents.first?.paneId, "w1:p1")
@@ -137,7 +141,7 @@ final class HerdrProtocolTests: XCTestCase {
         let agent = try XCTUnwrap(raw.agents["w1:p1"])
         XCTAssertEqual(
             agent["terminal_title_stripped"]?.templateText,
-            "Implement protocol 20"
+            "Implement protocol 22"
         )
         XCTAssertEqual(text(agent, "state_labels.blocked"), "Waiting for you")
         XCTAssertEqual(text(agent, "tokens.jj_status"), "conflict")
@@ -147,11 +151,11 @@ final class HerdrProtocolTests: XCTestCase {
         XCTAssertNil(agent.value(at: "stateLabels.blocked".split(separator: ".")))
         XCTAssertNil(agent.value(at: "tokens.jjStatus".split(separator: ".")))
 
-        XCTAssertEqual(raw.workspaces["w1"]?["pane_count"]?.templateText, "1")
+        XCTAssertEqual(raw.workspaces["w1"]?["pane_count"]?.templateText, "2")
         XCTAssertEqual(raw.tabs["w1:t1"]?["label"]?.templateText, "agent")
     }
 
-    func testDecodesProtocol20AgentInfoWithNativeSessionIdentity() throws {
+    func testDecodesProtocol22AgentInfoWithNativeSessionIdentity() throws {
         let json = Data(
             #"""
             {
@@ -163,6 +167,7 @@ final class HerdrProtocolTests: XCTestCase {
                 "workspace_id": "w1",
                 "tab_id": "w1:t1",
                 "terminal_id": "terminal-1",
+                "focused": true,
                 "revision": 17,
                 "state_change_seq": 9,
                 "agent_session": {
@@ -223,7 +228,7 @@ final class HerdrProtocolTests: XCTestCase {
         XCTAssertNil(result.agent.agentSession)
     }
 
-    func testDecodesProtocol20PaneReadResult() throws {
+    func testDecodesProtocol22PaneReadResult() throws {
         let json = Data(
             #"""
             {
