@@ -261,8 +261,6 @@ struct ShepherdApp: App {
             MenuBarIconPresentation.blinkEnabled()
                 && MenuBarIconPresentation.shouldBlink(store.menuBarState)
         }
-        // SwiftUI exposes no open/close API for a MenuBarExtra panel, so its
-        // hotkey clicks the status item button instead.
         let hotkeyCenter = GlobalHotkeyCenter(setting: HotkeySetting.shared) {
             [weak store, weak monitorNavigation] action in
             switch action {

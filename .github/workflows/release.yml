@@ -20,10 +20,11 @@ on:
 
 jobs:
   release:
-    # MonitorView uses a macOS 26 SDK API (sharedBackgroundVisibility),
-    # which needs the macos-26 image where Xcode 26 is the default.
+    # MenuBarPanelToggler uses a macOS 27 SDK API
+    # (NSStatusItem.expandedInterfaceSession), which needs the xcode-27 image
+    # where Xcode 27 is the default.
     # The deployment target stays at .macOS(.v15) per Package.swift.
-    runs-on: macos-26
+    runs-on: xcode-27
     permissions:
       # needed by gh release create
       contents: write

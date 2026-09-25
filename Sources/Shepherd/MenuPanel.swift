@@ -2,7 +2,13 @@
 // SwiftUI view through MenuBarExtra's .window style instead of a native menu.
 
 import AppKit
+import OSLog
 import SwiftUI
+
+private let menuPanelLog = Logger(
+    subsystem: "io.github.cryks.shepherd",
+    category: "hotkeys"
+)
 
 struct MenuPanel: View {
     @Bindable var store: FleetStore
@@ -145,23 +151,59 @@ struct MenuPanel: View {
     }
 }
 
-// SwiftUI has no programmatic MenuBarExtra presentation API (as of macOS 26),
-// so the hotkey clicks the status item button. performClick on an open panel
-// closes it, which makes this one path a toggle.
+// SwiftUI has no programmatic MenuBarExtra presentation API (as of macOS 27),
+// so the hotkey drives the status item that MenuBarExtra creates.
 @MainActor
 enum MenuBarPanelToggler {
     static func toggle() {
-        for window in NSApp.windows {
-            guard let button = statusBarButton(under: window.contentView) else {
-                continue
-            }
-            button.performClick(nil)
+        guard let button = statusBarButton() else {
+            menuPanelLog.error("No status bar button to toggle the menu panel")
             return
+        }
+        if #available(macOS 27, *) {
+            toggleExpandedInterface(of: button)
+        } else {
+            // performClick on an open panel closes it, which makes this one
+            // path a toggle.
+            button.performClick(nil)
+        }
+    }
+
+    // From macOS 27 the system menu bar hosts status items out of process.
+    // The in-process button has no target or action, so performClick does
+    // nothing; MenuBarExtra opens its panel only when the status item begins
+    // an expanded interface session. AppKit can cancel a session publicly but
+    // offers no public way to begin one, so the status item and the request
+    // go through private selectors. Checking them first turns a future rename
+    // into a log line instead of a crash.
+    @available(macOS 27, *)
+    private static func toggleExpandedInterface(of button: NSStatusBarButton) {
+        let requestSelector = NSSelectorFromString("_requestExpandedInterfaceSession")
+        guard let window = button.window,
+              window.responds(to: NSSelectorFromString("statusItem")),
+              let item = window.value(forKey: "statusItem") as? NSStatusItem,
+              item.responds(to: requestSelector) else {
+            menuPanelLog.error("Status item cannot request an expanded interface session")
+            return
+        }
+        if let session = item.expandedInterfaceSession {
+            session.cancel()
+        } else {
+            item.perform(requestSelector)
         }
     }
 
     // NSApp.windows holds only this process's windows and Shepherd has a single
     // MenuBarExtra, so the first hit is the right button.
+    private static func statusBarButton() -> NSStatusBarButton? {
+        for window in NSApp.windows {
+            if let button = statusBarButton(under: window.contentView) {
+                return button
+            }
+        }
+        return nil
+    }
+
     private static func statusBarButton(under view: NSView?) -> NSStatusBarButton? {
         guard let view else { return nil }
         if let button = view as? NSStatusBarButton { return button }

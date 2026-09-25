@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The menu panel hotkey works on macOS 27.
+
 ## v0.17.0 - 2026-09-08
 
 ### Changed
