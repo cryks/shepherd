@@ -22,18 +22,19 @@ endif
 
 # Target architectures. Empty (default) builds the current arch only.
 # Releases pass ARCHS="arm64 x86_64" for a universal binary.
-# Passing any --arch makes SwiftPM place products under
-# .build/apple/Products/Release instead of .build/release, so BUILD_DIR
-# switches along with it.
 ARCHS :=
-ifeq ($(ARCHS),)
-BUILD_DIR := .build/release
-ARCH_FLAGS :=
-else
-BUILD_DIR := .build/apple/Products/Release
 ARCH_FLAGS := $(foreach arch,$(ARCHS),--arch $(arch))
-endif
 
+# SwiftPM links through clang with --sysroot, from which clang does not read
+# the SDK version, so the binary would record the deployment target (15.0)
+# as its SDK. macOS gates behavior on that recorded version and would treat
+# Shepherd as built against the macOS 15 SDK. -isysroot lets clang read the
+# real version.
+SDK_PATH := $(shell xcrun --show-sdk-path)
+LINK_SDK_FLAGS := -Xswiftc -Xclang-linker -Xswiftc -isysroot \
+	-Xswiftc -Xclang-linker -Xswiftc $(SDK_PATH)
+
+BUILD_DIR := .build/release
 BINARY := $(BUILD_DIR)/Shepherd
 # Sparkle.framework from the SwiftPM binary artifact. The xcframework ships a
 # single universal (arm64 + x86_64) macOS slice, so the same path serves both
@@ -119,7 +120,7 @@ screenshots: build
 	$(BINARY) --render-screenshots $(SCREENSHOTS)
 
 build:
-	swift build -c release $(ARCH_FLAGS)
+	swift build -c release $(ARCH_FLAGS) $(LINK_SDK_FLAGS)
 
 run: app
 	open $(APP)
